@@ -171,3 +171,43 @@ pub fn similar(a: Rgba, b: Rgba, tol: f32) -> bool {
     let max = (tol / 100.0 * 255.0).powi(2) * 3.0;
     (dist2(a, b) as f32) <= max
 }
+
+// ------------------------------------------------------------------ Lab-Farbraum
+// Wahrnehmungsnaher Farbraum: Abstände entsprechen ungefähr dem, was das Auge sieht.
+
+fn srgb_to_lin(c: u8) -> f32 {
+    let v = c as f32 / 255.0;
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+fn lin_to_srgb(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+pub fn to_lab(c: Rgba) -> [f32; 3] {
+    let (r, g, b) = (srgb_to_lin(c[0]), srgb_to_lin(c[1]), srgb_to_lin(c[2]));
+    let x = (0.412_456_4 * r + 0.357_576_1 * g + 0.180_437_5 * b) / 0.950_47;
+    let y = 0.212_672_9 * r + 0.715_152_2 * g + 0.072_175 * b;
+    let z = (0.019_333_9 * r + 0.119_192 * g + 0.950_304_1 * b) / 1.088_83;
+    let f = |t: f32| if t > 0.008_856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+pub fn from_lab(lab: [f32; 3], a: u8) -> Rgba {
+    let fy = (lab[0] + 16.0) / 116.0;
+    let fx = fy + lab[1] / 500.0;
+    let fz = fy - lab[2] / 200.0;
+    let inv = |t: f32| if t.powi(3) > 0.008_856 { t.powi(3) } else { (t - 16.0 / 116.0) / 7.787 };
+    let (x, y, z) = (inv(fx) * 0.950_47, inv(fy), inv(fz) * 1.088_83);
+    let r = 3.240_454_2 * x - 1.537_138_5 * y - 0.498_531_4 * z;
+    let g = -0.969_266 * x + 1.876_010_8 * y + 0.041_556 * z;
+    let b = 0.055_643_4 * x - 0.204_025_9 * y + 1.057_225_2 * z;
+    [lin_to_srgb(r), lin_to_srgb(g), lin_to_srgb(b), a]
+}
+
+pub fn chroma(lab: [f32; 3]) -> f32 {
+    (lab[1] * lab[1] + lab[2] * lab[2]).sqrt()
+}

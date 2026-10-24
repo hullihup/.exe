@@ -376,19 +376,39 @@ pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 /// Kopiert einen Körperteil (eine Ebene) von einem Skin in einen anderen.
 /// Unterschiedliche Armbreiten (Classic/Slim) werden automatisch umgerechnet.
 pub fn copy_part(src: &Skin, src_model: Model, dst: &mut Skin, dst_model: Model, part: Part, layer: Layer) {
+    copy_part_where(src, src_model, dst, dst_model, part, layer, |_, _, _, _, _| true);
+}
+
+/// Wie [`copy_part`], aber nur für Texel, bei denen `filter(fläche, i, j, breite, höhe)` zutrifft.
+/// Gibt die beschriebenen Ziel-Texel zurück.
+pub fn copy_part_where(
+    src: &Skin,
+    src_model: Model,
+    dst: &mut Skin,
+    dst_model: Model,
+    part: Part,
+    layer: Layer,
+    filter: impl Fn(Face, usize, usize, usize, usize) -> bool,
+) -> Vec<(usize, usize)> {
     let sb = box_of(src_model, part, layer);
     let db = box_of(dst_model, part, layer);
+    let mut written = Vec::new();
     for face in Face::ALL {
         let (sx, sy, sw, sh) = sb.face_rect(face);
         let (dx, dy, dw, dh) = db.face_rect(face);
         for j in 0..dh {
             for i in 0..dw {
+                if !filter(face, i, j, dw, dh) {
+                    continue;
+                }
                 let si = resample(i, dw, sw);
                 let sj = resample(j, dh, sh);
                 dst.set(dx + i, dy + j, src.get(sx + si, sy + sj));
+                written.push((dx + i, dy + j));
             }
         }
     }
+    written
 }
 
 /// Wandelt einen Skin zwischen Classic- und Slim-Armen um.

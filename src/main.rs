@@ -91,13 +91,20 @@ impl App {
             title: String::new(),
             logo: None,
         };
-        // Datei per Kommandozeile / „Öffnen mit“ → neues Projekt
-        if let Some(arg) = std::env::args().nth(1) {
-            let path = PathBuf::from(arg);
-            if let Err(e) = app.project_from_file(&path) {
+        // Datei per Kommandozeile / „Öffnen mit“: eine Datei → neues Projekt, mehrere → Mixer
+        let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+        if args.len() == 1 {
+            if let Err(e) = app.project_from_file(&args[0]) {
                 // Programmzeit beginnt bei 0 → Meldung die ersten 5 Sekunden zeigen
                 app.toast = Some((e, 5.0, true));
             }
+        } else if args.len() > 1 {
+            for p in &args {
+                if let Ok((s, m)) = Self::read_skin(p) {
+                    app.mixer.set_slot(None, s, m, Self::file_stem(p));
+                }
+            }
+            app.screen = Screen::Mixer;
         }
         app
     }
@@ -312,11 +319,10 @@ impl App {
                             self.editor.replace_skin(s, m);
                             self.notify(ctx, format!("Importiert: {}", Self::file_name(&path)), false);
                         }
-                        Screen::Mixer => {
-                            let b = self.mixer.first_free_is_b();
-                            self.mixer.set_slot(b, s, m, Self::file_name(&path));
-                            self.notify(ctx, format!("Als Skin {} geladen", if b { "B" } else { "A" }), false);
-                        }
+                        Screen::Mixer => match self.mixer.set_slot(None, s, m, Self::file_stem(&path)) {
+                            Some(l) => self.notify(ctx, format!("Als Skin {l} geladen"), false),
+                            None => self.notify(ctx, "Es passen höchstens 26 Skins in den Mixer.", true),
+                        },
                     }
                 }
                 Err(e) => self.notify(ctx, e, true),
@@ -934,19 +940,33 @@ impl App {
     fn mixer_action(&mut self, ctx: &egui::Context, action: MixerAction) {
         match action {
             MixerAction::None => {}
-            MixerAction::LoadA | MixerAction::LoadB => {
-                let b = matches!(action, MixerAction::LoadB);
-                if let Some(p) = Self::pick_png() {
+            MixerAction::Load(at) => {
+                let files: Vec<PathBuf> = match at {
+                    Some(_) => Self::pick_png().into_iter().collect(),
+                    None => rfd::FileDialog::new()
+                        .add_filter("Minecraft-Skin (PNG)", &["png"])
+                        .set_title("Skins für den Mixer laden")
+                        .pick_files()
+                        .unwrap_or_default(),
+                };
+                let mut full = false;
+                for p in files {
                     match Self::read_skin(&p) {
-                        Ok((s, m)) => self.mixer.set_slot(b, s, m, Self::file_name(&p)),
-                        Err(e) => self.notify(ctx, e, true),
+                        Ok((s, m)) => {
+                            if self.mixer.set_slot(at, s, m, Self::file_stem(&p)).is_none() {
+                                full = true;
+                            }
+                        }
+                        Err(e) => self.notify(ctx, format!("{}: {e}", Self::file_name(&p)), true),
                     }
                 }
+                if full {
+                    self.notify(ctx, "Es passen höchstens 26 Skins in den Mixer.", true);
+                }
             }
-            MixerAction::FromEditorA | MixerAction::FromEditorB => {
-                let b = matches!(action, MixerAction::FromEditorB);
+            MixerAction::FromEditor(at) => {
                 let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Editor-Skin".into());
-                self.mixer.set_slot(b, self.editor.skin.clone(), self.editor.model, name);
+                self.mixer.set_slot(at, self.editor.skin.clone(), self.editor.model, name);
             }
             MixerAction::OpenInEditor => {
                 let (skin, model) = (self.mixer.result.clone(), self.mixer.result_model);
