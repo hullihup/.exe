@@ -1,7 +1,6 @@
 //! Der Pixel-Editor: Werkzeuge, Verlauf, 2D-Zeichenfläche und Farbwahl.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 
 use eframe::egui::{
     self, Color32, ColorImage, CornerRadius, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke,
@@ -150,6 +149,10 @@ pub struct Editor {
     pub show_grid: bool,
     pub show_regions: bool,
     pub vis: Visibility,
+    pub layer_on: [bool; 2],
+    pub part_on: [bool; 6],
+    /// 2D-Texturansicht ausgeklappt?
+    pub show_2d: bool,
     pub preview: Preview,
 
     stroke: Option<StrokeState>,
@@ -162,7 +165,6 @@ pub struct Editor {
     tex_checker: Option<TextureHandle>,
     tex_unused: Option<(Model, TextureHandle)>,
 
-    pub path: Option<PathBuf>,
     pub modified: bool,
     rng: Rng,
     adjust: Option<AdjustState>,
@@ -207,6 +209,7 @@ impl Editor {
     pub fn new() -> Self {
         let mut preview = Preview::new();
         preview.antialias = true;
+        preview.ghosts = true;
         Editor {
             skin: skin::starter_skin(),
             model: Model::Classic,
@@ -238,6 +241,9 @@ impl Editor {
             show_grid: true,
             show_regions: true,
             vis: Visibility::default(),
+            layer_on: [true; 2],
+            part_on: [true; 6],
+            show_2d: false,
             preview,
             stroke: None,
             hover2d: None,
@@ -247,7 +253,6 @@ impl Editor {
             tex_skin_src: None,
             tex_checker: None,
             tex_unused: None,
-            path: None,
             modified: false,
             rng: Rng::from_time(),
             adjust: None,
@@ -301,10 +306,18 @@ impl Editor {
         }
     }
 
-    pub fn load(&mut self, skin: Skin, model: Model, path: Option<PathBuf>) {
-        self.replace_skin(skin, model);
-        self.path = path;
+    /// Öffnet einen Skin als neues Projekt (frischer Verlauf, nichts geändert).
+    pub fn open_fresh(&mut self, skin: Skin, model: Model) {
+        self.skin = skin;
+        self.model = model;
+        self.undo.clear();
+        self.redo.clear();
+        self.stroke = None;
+        self.adjust = None;
         self.modified = false;
+        self.part_on = [true; 6];
+        self.layer_on = [true; 2];
+        self.sync_vis();
     }
 
     // ------------------------------------------------------------------ Bearbeiten-Funktionen
@@ -509,7 +522,9 @@ impl Editor {
 
     /// Malt ein Texel mit dem aktuellen Werkzeug. `forced` = Farbe vom Spiegel-Partner übernehmen.
     fn paint_texel(&mut self, x: usize, y: usize, forced: Option<Rgba>) -> Option<Rgba> {
-        skin::texel_info(self.model, x, y)?;
+        if !self.texel_visible(x, y) {
+            return None;
+        }
         let st = self.stroke.as_mut()?;
         let idx = y * SIZE + x;
         if st.painted[idx] {
@@ -556,6 +571,9 @@ impl Editor {
     fn flood_fill(&mut self, x: i32, y: i32, secondary: bool) {
         let (x, y) = (x as usize, y as usize);
         let Some(seed_info) = skin::texel_info(self.model, x, y) else { return };
+        if !self.texel_visible(x, y) {
+            return;
+        }
         let target = self.skin.get(x, y);
         let mut seen = vec![false; SIZE * SIZE];
         let mut stack = vec![(x, y)];
@@ -569,6 +587,9 @@ impl Editor {
                     continue;
                 }
                 let Some(t) = skin::texel_info(self.model, nx, ny) else { continue };
+                if !self.texel_visible(nx, ny) {
+                    continue;
+                }
                 let ok_region = match self.fill_limit {
                     FillLimit::Face => t.part == seed_info.part && t.layer == seed_info.layer && t.face == seed_info.face,
                     FillLimit::Part => t.part == seed_info.part && t.layer == seed_info.layer,
@@ -590,7 +611,10 @@ impl Editor {
         let target = self.skin.get(x as usize, y as usize);
         let map = skin::texel_map(self.model);
         for idx in 0..SIZE * SIZE {
-            if map[idx].is_some() && color::similar(self.skin.px[idx], target, self.tolerance) {
+            if map[idx].is_some()
+                && self.texel_visible(idx % SIZE, idx / SIZE)
+                && color::similar(self.skin.px[idx], target, self.tolerance)
+            {
                 let c = self.fill_color(secondary);
                 self.skin.px[idx] = c;
             }
@@ -939,49 +963,126 @@ impl Editor {
 
     pub fn ui_view_options(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.label(RichText::new("MODELL & EBENEN").small().strong().weak());
+        ui.label(RichText::new("MODELL").small().strong().weak());
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.model, Model::Classic, "Classic").on_hover_text(Model::Classic.name());
             ui.selectable_value(&mut self.model, Model::Slim, "Slim").on_hover_text(Model::Slim.name());
         });
-        ui.add_space(4.0);
-        egui::Grid::new("vis").num_columns(3).spacing([10.0, 2.0]).show(ui, |ui| {
-            ui.label("");
-            ui.label(RichText::new("1. Ebene").small());
-            ui.label(RichText::new("2. Ebene").small());
-            ui.end_row();
-            for p in Part::ALL {
-                ui.label(p.name());
-                ui.checkbox(&mut self.vis.base[p.idx()], "");
-                ui.checkbox(&mut self.vis.overlay[p.idx()], "");
-                ui.end_row();
-            }
-        });
+    }
+
+    /// Körperteile und Ebenen ein-/ausblenden (wie bei Skindex), damit man besser an
+    /// verdeckte Stellen kommt.
+    pub fn ui_parts(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("KÖRPERTEILE").small().strong().weak());
+        let orange = Color32::from_rgb(242, 140, 40);
+        let bw = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).floor();
         ui.horizontal(|ui| {
-            if ui.small_button("Alle").clicked() {
-                self.vis = Visibility::default();
-            }
-            if ui.small_button("Nur 1. Ebene").clicked() {
-                self.vis.overlay = [false; 6];
-                self.vis.base = [true; 6];
-            }
-            if ui.small_button("Nur 2. Ebene").clicked() {
-                self.vis.base = [false; 6];
-                self.vis.overlay = [true; 6];
+            for (k, name) in [(0usize, "1. Ebene"), (1, "2. Ebene")] {
+                let on = self.layer_on[k];
+                let text = RichText::new(name).strong().color(if on { Color32::WHITE } else { ui.visuals().weak_text_color() });
+                let btn = egui::Button::new(text)
+                    .fill(if on { orange } else { ui.visuals().widgets.inactive.weak_bg_fill })
+                    .min_size(egui::vec2(bw, 24.0));
+                let tip = if k == 0 { "Körper (1. Ebene) ein-/ausblenden" } else { "Äußere Ebene (Hut, Jacke …) ein-/ausblenden" };
+                if ui.add(btn).on_hover_text(tip).clicked() {
+                    self.layer_on[k] = !on;
+                }
             }
         });
+        ui.add_space(4.0);
+
+        // Figur: Kopf, Arme, Körper, Beine
+        let slim = self.model == Model::Slim;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 150.0), Sense::hover());
+        let u = (rect.height() / 34.0).min(rect.width() / 20.0);
+        let gap = u * 0.6;
+        let aw = if slim { 3.0 } else { 4.0 };
+        let total_w = 8.0 * u + 2.0 * (aw * u + gap);
+        let x0 = rect.center().x - total_w / 2.0;
+        let y0 = rect.top() + (rect.height() - (32.0 * u + 2.0 * gap)) / 2.0;
+        let body_x = x0 + aw * u + gap;
+        let r = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let parts = [
+            (Part::Head, r(body_x, y0, 8.0 * u, 8.0 * u)),
+            (Part::Body, r(body_x, y0 + 8.0 * u + gap, 8.0 * u, 12.0 * u)),
+            // rechter Arm der Figur = links im Bild (Ansicht von vorne)
+            (Part::RightArm, r(x0, y0 + 8.0 * u + gap, aw * u, 12.0 * u)),
+            (Part::LeftArm, r(body_x + 8.0 * u + gap, y0 + 8.0 * u + gap, aw * u, 12.0 * u)),
+            (Part::RightLeg, r(body_x, y0 + 20.0 * u + 2.0 * gap, 4.0 * u - gap * 0.5, 12.0 * u)),
+            (Part::LeftLeg, r(body_x + 4.0 * u + gap * 0.5, y0 + 20.0 * u + 2.0 * gap, 4.0 * u - gap * 0.5, 12.0 * u)),
+        ];
+        for (part, pr) in parts {
+            let id = ui.scope_id().with(("part_toggle", part.idx()));
+            let resp = ui.interact(pr, id, Sense::click());
+            if resp.clicked() {
+                self.part_on[part.idx()] = !self.part_on[part.idx()];
+            }
+            if resp.secondary_clicked() {
+                // nur dieses Teil zeigen (oder wieder alle)
+                let solo = self.part_on.iter().filter(|&&b| b).count() == 1 && self.part_on[part.idx()];
+                self.part_on = if solo { [true; 6] } else { std::array::from_fn(|i| i == part.idx()) };
+            }
+            let on = self.part_on[part.idx()];
+            let p = ui.painter();
+            let fill = if on {
+                if resp.hovered() { orange.gamma_multiply(0.55) } else { orange.gamma_multiply(0.32) }
+            } else if resp.hovered() {
+                Color32::from_white_alpha(14)
+            } else {
+                Color32::TRANSPARENT
+            };
+            p.rect_filled(pr, 3.0, fill);
+            let stroke = if on { Stroke::new(2.0, orange) } else { Stroke::new(1.5, orange.gamma_multiply(0.35)) };
+            p.rect_stroke(pr, 3.0, stroke, StrokeKind::Inside);
+            resp.on_hover_text(format!(
+                "{} – Klick: ein-/ausblenden\nRechtsklick: nur dieses Teil zeigen",
+                part.name()
+            ));
+        }
+        if self.part_on.iter().any(|b| !b) || self.layer_on.iter().any(|b| !b) {
+            if ui.small_button("Alle zeigen").clicked() {
+                self.part_on = [true; 6];
+                self.layer_on = [true; 2];
+            }
+        } else {
+            ui.add(egui::Label::new(RichText::new("Klick: aus-/einblenden\nRechtsklick: nur dieses Teil").small().weak()));
+        }
+        self.sync_vis();
+    }
+
+    fn sync_vis(&mut self) {
+        self.vis = Visibility {
+            base: std::array::from_fn(|i| self.layer_on[0] && self.part_on[i]),
+            overlay: std::array::from_fn(|i| self.layer_on[1] && self.part_on[i]),
+        };
+    }
+
+    /// Ist dieses Texel gerade sichtbar (Teil und Ebene eingeblendet)?
+    fn texel_visible(&self, x: usize, y: usize) -> bool {
+        match skin::texel_info(self.model, x, y) {
+            Some(t) => match t.layer {
+                Layer::Base => self.vis.base[t.part.idx()],
+                Layer::Overlay => self.vis.overlay[t.part.idx()],
+            },
+            None => false,
+        }
     }
 
     /// 3D-Vorschau mit Malen auf dem Modell.
     pub fn ui_preview(&mut self, ui: &mut egui::Ui) {
+        self.sync_vis();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("3D-VORSCHAU").small().strong().weak());
+            ui.label(RichText::new("3D-ANSICHT").small().strong().weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.checkbox(&mut self.preview.antialias, "Glätten");
             });
         });
         let h = (ui.available_height() - 64.0).max(120.0);
-        let size = egui::vec2(ui.available_width(), h);
+        let top_left = ui.cursor().min;
+        // Bei schmaler Ansicht bekommt die Teile-Figur eine eigene Spalte, sonst liegt sie über dem Modell
+        let narrow = ui.available_width() < 620.0;
+        let reserve = if narrow { 178.0 } else { 0.0 };
+        let size = egui::vec2(ui.available_width() - reserve, h);
         let mut highlight = self.hover_footprint(self.hover2d.or(self.hover3d));
         if self.stroke.is_some() {
             highlight.clear();
@@ -989,8 +1090,22 @@ impl Editor {
         let alt = ui.input(|i| i.modifiers.alt);
         let paint_enabled = self.tool.paints_in_3d() || alt;
         let skin_copy = self.skin.clone();
-        let inp = self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, paint_enabled);
-        self.hover3d = inp.hover;
+        let inp = ui
+            .horizontal(|ui| {
+                ui.add_space(reserve);
+                self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, paint_enabled)
+            })
+            .inner;
+        // Körperteil-Schalter (wie bei Skindex) oben links in der 3D-Ansicht
+        let panel = Rect::from_min_size(top_left + egui::vec2(6.0, 6.0), egui::vec2(166.0, 240.0));
+        ui.painter().rect_filled(panel, 10.0, Color32::from_rgba_unmultiplied(40, 43, 51, 235));
+        ui.painter().rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_gray(64)), StrokeKind::Inside);
+        // Fläche hinter den Schaltern fängt Klicks ab, damit dort nicht gemalt/gedreht wird
+        ui.interact(panel, ui.scope_id().with("parts_panel_bg"), Sense::click_and_drag());
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(panel.shrink(10.0)).layout(egui::Layout::top_down(egui::Align::Min)));
+        self.ui_parts(&mut child);
+        let over_panel = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| panel.contains(p));
+        self.hover3d = if over_panel { None } else { inp.hover };
         if inp.stroke_started {
             if let Some((x, y)) = inp.texels.first().copied().or(inp.hover) {
                 let prev_tool = self.tool;
@@ -1030,7 +1145,9 @@ impl Editor {
             }
         });
         ui.label(
-            RichText::new("Links: malen · Rechts/Leer ziehen: drehen · Mausrad: Zoom").small().weak(),
+            RichText::new("Linksklick: malen · Rechte Maustaste oder leere Fläche ziehen: drehen · Mausrad: Zoom · Doppelklick daneben: Ansicht zurücksetzen")
+                .small()
+                .weak(),
         );
     }
 
@@ -1224,6 +1341,25 @@ impl Editor {
             }
         }
 
+        // ausgeblendete Körperteile abdunkeln
+        for b in skin::boxes(self.model) {
+            let visible = match b.layer {
+                Layer::Base => self.vis.base[b.part.idx()],
+                Layer::Overlay => self.vis.overlay[b.part.idx()],
+            };
+            if visible {
+                continue;
+            }
+            for face in Face::ALL {
+                let (fx, fy, fw, fh) = b.face_rect(face);
+                let r = Rect::from_min_size(
+                    origin + egui::vec2(fx as f32, fy as f32) * scale,
+                    egui::vec2(fw as f32, fh as f32) * scale,
+                );
+                painter.rect_filled(r, 0.0, Color32::from_black_alpha(170));
+            }
+        }
+
         // Bereiche der Körperteile
         let hover_info = self.hover2d.or(self.hover3d).and_then(|(x, y)| skin::texel_info(self.model, x, y));
         if self.show_regions {
@@ -1366,10 +1502,6 @@ impl Editor {
             s += &format!("   {}", if c[3] == 0 { "durchsichtig".to_string() } else { color::to_hex(c) });
         }
         s
-    }
-
-    pub fn zoom_percent(&self) -> u32 {
-        (self.zoom * 100.0).round() as u32
     }
 }
 

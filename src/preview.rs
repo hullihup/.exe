@@ -17,6 +17,8 @@ pub struct Preview {
     rotating: bool,
     last_pointer: Option<egui::Pos2>,
     pub antialias: bool,
+    /// leere Pixel andeuten (Editor)
+    pub ghosts: bool,
 }
 
 pub struct PreviewInput {
@@ -150,6 +152,7 @@ impl Preview {
             width: (rect.width() * ppp).round().max(1.0) as usize,
             height: (rect.height() * ppp).round().max(1.0) as usize,
             supersample: ss,
+            ghosts: self.ghosts,
         };
         let changed = self.last_params.as_ref() != Some(&params) || self.last_skin.as_ref() != Some(skin);
         if changed {
@@ -194,7 +197,8 @@ impl Preview {
 
     /// Rendert ein großes Vorschaubild (z. B. zum Exportieren).
     pub fn render_image(&self, skin: &Skin, model: Model, vis: Visibility, w: usize, h: usize) -> Vec<u8> {
-        let params = RenderParams { cam: self.cam, model, vis, highlight: vec![], width: w, height: h, supersample: 3 };
+        let params =
+            RenderParams { cam: self.cam, model, vis, highlight: vec![], width: w, height: h, supersample: 3, ghosts: false };
         let out = render(skin, &params);
         // vormultipliziert -> normal
         let mut rgba = out.rgba;

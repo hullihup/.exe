@@ -40,6 +40,8 @@ pub struct RenderParams {
     pub width: usize,
     pub height: usize,
     pub supersample: usize,
+    /// Durchsichtige Pixel leicht andeuten und anklickbar machen (zum Malen)
+    pub ghosts: bool,
 }
 
 pub struct RenderOut {
@@ -87,6 +89,9 @@ pub fn render(skin: &Skin, p: &RenderParams) -> RenderOut {
     let mut color = vec![[0f32; 4]; w * h];
     let mut depth = vec![f32::INFINITY; w * h];
     let mut pick_hi = vec![0u16; w * h];
+    // "Geister": durchsichtige Pixel, die man trotzdem treffen und bemalen kann
+    let mut ghost_depth = vec![f32::INFINITY; w * h];
+    let mut ghost_pick = vec![0u16; w * h];
 
     let rot = Rot { cy: p.cam.yaw.cos(), sy: p.cam.yaw.sin(), cp: p.cam.pitch.cos(), sp: p.cam.pitch.sin() };
     let center: V3 = [0.0, 16.0, 0.0];
@@ -175,6 +180,17 @@ pub fn render(skin: &Skin, p: &RenderParams) -> RenderOut {
                         let ty = fy + ((v * fh as f32) as usize).min(fh - 1);
                         let c = skin.get(tx, ty);
                         let a = c[3];
+                        // Leere Pixel: auf der 1. Ebene immer, auf der 2. Ebene nur wenn
+                        // die 1. Ebene dieses Körperteils ausgeblendet ist.
+                        if a == 0
+                            && p.ghosts
+                            && pass < 2
+                            && (b.layer == Layer::Base || !p.vis.base[b.part.idx()])
+                            && t < ghost_depth[idx]
+                        {
+                            ghost_depth[idx] = t;
+                            ghost_pick[idx] = (ty * SIZE + tx) as u16 + 1;
+                        }
                         let ok = match pass {
                             0 => a > 0,
                             1 => a == 255,
@@ -209,6 +225,22 @@ pub fn render(skin: &Skin, p: &RenderParams) -> RenderOut {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Geister über dem Bild einblenden, wenn sie vorne liegen
+    if p.ghosts {
+        for idx in 0..w * h {
+            if ghost_depth[idx] < depth[idx] {
+                let id = ghost_pick[idx];
+                let (g, a) = if p.highlight.contains(&id) { (1.0, 0.55) } else { (0.62, 0.13) };
+                let dst = &mut color[idx];
+                for k in 0..3 {
+                    dst[k] = g * a + dst[k] * (1.0 - a);
+                }
+                dst[3] = a + dst[3] * (1.0 - a);
+                pick_hi[idx] = id;
             }
         }
     }

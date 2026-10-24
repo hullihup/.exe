@@ -175,7 +175,7 @@ impl Mixer {
         }
     }
 
-    fn recompute(&mut self) {
+    pub fn recompute(&mut self) {
         let inputs = Inputs {
             a: self.a.as_ref().map(|s| (s.skin.clone(), s.model)),
             b: self.b.as_ref().map(|s| (s.skin.clone(), s.model)),
@@ -216,7 +216,10 @@ impl Mixer {
                     Src::B => self.tone_b,
                     Src::Empty => None,
                 };
-                let transfer = self.tone_transfer && p != Part::Head && (src != head_src || self.tone_override.is_some());
+                let transfer = self.tone_transfer
+                    && layer == Layer::Base
+                    && p != Part::Head
+                    && (src != head_src || self.tone_override.is_some());
                 let outfit = (self.outfit_hue, self.outfit_sat, self.outfit_bright);
                 let do_outfit = p != Part::Head && outfit != (0.0, 0.0, 0.0);
                 let b = skin::box_of(dst_model, p, layer);
@@ -230,7 +233,8 @@ impl Mixer {
                                 out.set(x, y, c);
                                 continue;
                             }
-                            let is_skin = src_tone.is_some_and(|t| is_tone(c, t, self.tone_tol));
+                            // Haut gibt es nur auf der 1. Ebene; die 2. Ebene ist Kleidung/Accessoires
+                            let is_skin = layer == Layer::Base && src_tone.is_some_and(|t| is_tone(c, t, self.tone_tol));
                             if is_skin {
                                 if transfer {
                                     if let (Some(from), Some(to)) = (src_tone, head_tone) {
@@ -253,7 +257,7 @@ impl Mixer {
 
     // ------------------------------------------------------------- Oberfläche
 
-    pub fn ui_inputs(&mut self, ui: &mut egui::Ui) -> MixerAction {
+    pub fn ui_inputs(&mut self, ui: &mut egui::Ui, editor_available: bool) -> MixerAction {
         let mut action = MixerAction::None;
         for which_b in [false, true] {
             let label = if which_b { "SKIN B" } else { "SKIN A" };
@@ -293,20 +297,31 @@ impl Mixer {
                                 ui.selectable_value(&mut s.model, Model::Classic, "Classic");
                                 ui.selectable_value(&mut s.model, Model::Slim, "Slim");
                             });
-                            if let Some(t) = tone {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Hautton:").small());
-                                    let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 12.0), Sense::hover());
-                                    ui.painter().rect_filled(r, 3.0, c32(t));
-                                });
-                            }
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Hautton:").small());
+                                match tone {
+                                    Some(t) => {
+                                        let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 12.0), Sense::hover());
+                                        ui.painter().rect_filled(r, 3.0, c32(t));
+                                    }
+                                    None => {
+                                        ui.label(RichText::new("nicht erkannt").small().weak()).on_hover_text(
+                                            "Keine Hautfarbe im Gesicht gefunden – hier wird nichts umgefärbt.",
+                                        );
+                                    }
+                                }
+                            });
                         } else {
                             ui.label(RichText::new("Noch kein Skin").weak());
                         }
                         if ui.button("📂 Laden…").clicked() {
                             action = if which_b { MixerAction::LoadB } else { MixerAction::LoadA };
                         }
-                        if ui.button("✏ Aus Editor").on_hover_text("Den Skin aus dem Editor-Tab übernehmen").clicked() {
+                        if ui
+                            .add_enabled(editor_available, egui::Button::new("✏ Aus Editor"))
+                            .on_hover_text("Den Skin aus dem geöffneten Projekt übernehmen")
+                            .clicked()
+                        {
                             action = if which_b { MixerAction::FromEditorB } else { MixerAction::FromEditorA };
                         }
                     });
@@ -505,13 +520,16 @@ impl Mixer {
 // ------------------------------------------------------------- Hautton-Erkennung
 
 fn skin_like(h: color::Hsv) -> bool {
-    (h.h <= 50.0 || h.h >= 340.0) && (0.1..=0.8).contains(&h.s) && h.v > 0.25
+    (h.h <= 50.0 || h.h >= 345.0) && (0.1..=0.8).contains(&h.s) && h.v > 0.22
 }
 
 /// Ermittelt die typische Hautfarbe eines Skins anhand des Gesichts.
+/// Gibt `None` zurück, wenn keine hautähnliche Farbe gefunden wird (z. B. Masken,
+/// schwarze Gesichter von Robotern) – dann wird auch nichts umgefärbt.
 pub fn detect_skin_tone(s: &Skin, model: Model) -> Option<Rgba> {
     let mut buckets: std::collections::HashMap<(u8, u8, u8), (f32, [u32; 3], u32)> = Default::default();
     let head = skin::box_of(model, Part::Head, Layer::Base);
+    let mut total = 0u32;
     for face in [skin::Face::Front, skin::Face::Right, skin::Face::Left] {
         let (fx, fy, fw, fh) = head.face_rect(face);
         for j in 2..fh {
@@ -520,8 +538,12 @@ pub fn detect_skin_tone(s: &Skin, model: Model) -> Option<Rgba> {
                 if c[3] < 255 {
                     continue;
                 }
+                total += 1;
                 let hsv = color::to_hsv(c);
-                let weight = if skin_like(hsv) { 3.0 } else { 1.0 } * if face == skin::Face::Front { 1.5 } else { 1.0 };
+                if !skin_like(hsv) {
+                    continue;
+                }
+                let weight = if face == skin::Face::Front { 1.5 } else { 1.0 };
                 let key = (c[0] >> 4, c[1] >> 4, c[2] >> 4);
                 let e = buckets.entry(key).or_insert((0.0, [0; 3], 0));
                 e.0 += weight;
@@ -533,6 +555,10 @@ pub fn detect_skin_tone(s: &Skin, model: Model) -> Option<Rgba> {
         }
     }
     let best = buckets.values().max_by(|a, b| a.0.total_cmp(&b.0))?;
+    // Mindestens ein nennenswerter Teil des Gesichts muss diese Farbe haben
+    if best.2 < 6 || (best.2 as f32) < total as f32 * 0.08 {
+        return None;
+    }
     let n = best.2.max(1);
     Some([(best.1[0] / n) as u8, (best.1[1] / n) as u8, (best.1[2] / n) as u8, 255])
 }
@@ -545,10 +571,6 @@ fn hue_diff(a: f32, b: f32) -> f32 {
 fn is_tone(c: Rgba, tone: Rgba, tol: f32) -> bool {
     let a = color::to_hsv(c);
     let t = color::to_hsv(tone);
-    if t.s < 0.08 {
-        // graue/weiße "Haut" (z. B. Roboter): nur nahe Farben
-        return color::dist2(c, tone) < (900.0 * (0.5 + tol * 2.0)) as i32;
-    }
     let ratio = a.v / t.v.max(0.01);
     hue_diff(a.h, t.h) <= 8.0 + 22.0 * tol
         && (a.s - t.s).abs() <= 0.08 + 0.3 * tol

@@ -9,14 +9,22 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 
 ## Funktionen
 
+### 🏠 Startseite & Projekte
+- Beim Start erscheint eine Startseite. Dort startest du ein **neues Projekt** (Minecraft Skin Editor oder Skin-Mixer) oder machst mit dem **letzten Projekt** weiter.
+- Projekte werden **im Programm gespeichert** (unter `%APPDATA%\SkinStudio`). Du musst keine Dateien verwalten.
+- Beim Schließen fragt das Programm, ob du speichern möchtest. Beim nächsten Start ist das Projekt wieder da.
+- Projekte lassen sich umbenennen und löschen. Ein PNG kannst du als neues Projekt importieren.
+
 ### 🎨 Editor
 - **Stift**, **Radierer**, **Füllen** (Eimer), **Pipette**, **Linie**, **Rechteck**, **Farbe ersetzen**
 - **Rauschpinsel**: malt die gewählte Farbe in zufälligen Helligkeitsstufen, für lebendige Flächen wie Stoff, Haare oder Stein (Stärke, Stufen und Farbton-Streuung einstellbar)
 - **Licht/Schatten**: hellt auf (Linksklick) oder dunkelt ab (Rechtsklick), auf Wunsch mit Farbton-Verschiebung wie in der Pixel-Art
 - **Spiegeln**: alles, was du malst, erscheint auch auf der anderen Körperseite
 - **Rückgängig / Wiederholen** (bis zu 300 Schritte)
-- **Direkt auf dem 3D-Modell malen**; die Vorschau dreht sich mit der rechten Maustaste
-- Beide Ebenen (1. Ebene und 2. Ebene/Overlay) einzeln ein- und ausblendbar
+- **Die große 3D-Ansicht ist die Hauptansicht**: direkt auf dem Modell malen, mit der rechten Maustaste drehen
+- **Körperteile ausblenden wie bei Skindex**: 1. und 2. Ebene sowie Kopf, Körper, Arme und Beine per Klick ausblenden, damit man an verdeckte Stellen kommt (Rechtsklick: nur dieses Teil zeigen)
+- Wegradierte Stellen bleiben anklickbar und lassen sich wieder bemalen
+- Die 2D-Textur ist standardmäßig eingeklappt und lässt sich über den Pfeil rechts ausklappen
 - Classic- (4 px) und Slim-Arme (3 px), mit automatischer Umrechnung
 - Farbwähler mit Hex-Eingabe, automatischen Schattierungen, Palette und zuletzt benutzten Farben
 - Farben anpassen (Farbton, Sättigung, Helligkeit) für den ganzen Skin, eine Ebene oder ein Körperteil
@@ -27,7 +35,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 ### 👫 Skin-Mixer
 - Zwei Skins laden (A und B) und pro Körperteil und Ebene wählen, woher er kommt
 - Vorlagen: **Kopf A + Outfit B** (Partnerlook), Oberteil tauschen, Hose tauschen, Frisur oder Hut tauschen, Zufallsmix
-- **Smarte Hautton-Erkennung**: erkennt die Hautfarbe am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen
+- **Smarte Hautton-Erkennung**: erkennt die Hautfarbe am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen. Die 2. Ebene (Kleidung) wird dabei nie umgefärbt. Hat ein Skin kein erkennbares Gesicht (z. B. eine Maske), bleibt er unverändert.
 - Outfit-Farbvarianten (Farbton, Sättigung, Helligkeit oder per 🎲 zufällig)
 - Ergebnis im Editor weiterbearbeiten oder direkt exportieren
 
@@ -46,7 +54,8 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 | X | Haupt- und Zweitfarbe tauschen |
 | [ ] oder − + | Pinselgröße |
 | Strg+Z / Strg+Y | Rückgängig / Wiederholen |
-| Strg+O / Strg+S / Strg+E | Öffnen / Speichern / Exportieren |
+| Strg+S | Projekt speichern |
+| Strg+O / Strg+E | PNG importieren / als PNG exportieren |
 | Mausrad, mittlere Maustaste | Zoomen, Verschieben |
 | F1 | Hilfe |
 

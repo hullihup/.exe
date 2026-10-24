@@ -76,7 +76,7 @@ pub fn hsv_picker(ui: &mut egui::Ui, hsv: &mut crate::color::Hsv, alpha: &mut u8
     let painter_stroke = Stroke::new(1.0, Color32::from_black_alpha(160));
 
     // Sättigung (x) / Helligkeit (y)
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, (width * 0.7).round()), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, (width * 0.6).round()), Sense::click_and_drag());
     if resp.is_pointer_button_down_on() {
         if let Some(p) = resp.interact_pointer_pos() {
             hsv.s = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
