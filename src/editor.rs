@@ -153,6 +153,8 @@ pub struct Editor {
     pub part_on: [bool; 6],
     /// 2D-Texturansicht ausgeklappt?
     pub show_2d: bool,
+    /// „Skin importieren“ wurde geklickt (der Dateidialog läuft im Hauptprogramm)
+    pub import_requested: bool,
     pub preview: Preview,
 
     stroke: Option<StrokeState>,
@@ -244,6 +246,7 @@ impl Editor {
             layer_on: [true; 2],
             part_on: [true; 6],
             show_2d: false,
+            import_requested: false,
             preview,
             stroke: None,
             hover2d: None,
@@ -832,6 +835,16 @@ impl Editor {
                 self.redo();
             }
         });
+        ui.add_space(10.0);
+        ui.separator();
+        let btn = egui::Button::new(RichText::new("📂  Skin importieren …").strong()).min_size(egui::vec2(ui.available_width(), 32.0));
+        if ui
+            .add(btn)
+            .on_hover_text("Einen PNG-Skin in dieses Projekt laden (Strg+O).\nStrg+Z macht es rückgängig.\nOder PNG einfach ins Fenster ziehen.")
+            .clicked()
+        {
+            self.import_requested = true;
+        }
     }
 
     fn noise_options(&mut self, ui: &mut egui::Ui) {
@@ -981,6 +994,7 @@ impl Editor {
                 let on = self.layer_on[k];
                 let text = RichText::new(name).strong().color(if on { Color32::WHITE } else { ui.visuals().weak_text_color() });
                 let btn = egui::Button::new(text)
+                    .corner_radius(0.0)
                     .fill(if on { orange } else { ui.visuals().widgets.inactive.weak_bg_fill })
                     .min_size(egui::vec2(bw, 24.0));
                 let tip = if k == 0 { "Körper (1. Ebene) ein-/ausblenden" } else { "Äußere Ebene (Hut, Jacke …) ein-/ausblenden" };
@@ -993,7 +1007,7 @@ impl Editor {
 
         // Figur: Kopf, Arme, Körper, Beine
         let slim = self.model == Model::Slim;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 150.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 140.0), Sense::hover());
         let u = (rect.height() / 34.0).min(rect.width() / 20.0);
         let gap = u * 0.6;
         let aw = if slim { 3.0 } else { 4.0 };
@@ -1031,9 +1045,9 @@ impl Editor {
             } else {
                 Color32::TRANSPARENT
             };
-            p.rect_filled(pr, 3.0, fill);
+            p.rect_filled(pr, 0.0, fill);
             let stroke = if on { Stroke::new(2.0, orange) } else { Stroke::new(1.5, orange.gamma_multiply(0.35)) };
-            p.rect_stroke(pr, 3.0, stroke, StrokeKind::Inside);
+            p.rect_stroke(pr, 0.0, stroke, StrokeKind::Inside);
             resp.on_hover_text(format!(
                 "{} – Klick: ein-/ausblenden\nRechtsklick: nur dieses Teil zeigen",
                 part.name()
@@ -1078,11 +1092,7 @@ impl Editor {
             });
         });
         let h = (ui.available_height() - 64.0).max(120.0);
-        let top_left = ui.cursor().min;
-        // Bei schmaler Ansicht bekommt die Teile-Figur eine eigene Spalte, sonst liegt sie über dem Modell
-        let narrow = ui.available_width() < 620.0;
-        let reserve = if narrow { 178.0 } else { 0.0 };
-        let size = egui::vec2(ui.available_width() - reserve, h);
+        let size = egui::vec2(ui.available_width(), h);
         let mut highlight = self.hover_footprint(self.hover2d.or(self.hover3d));
         if self.stroke.is_some() {
             highlight.clear();
@@ -1090,22 +1100,8 @@ impl Editor {
         let alt = ui.input(|i| i.modifiers.alt);
         let paint_enabled = self.tool.paints_in_3d() || alt;
         let skin_copy = self.skin.clone();
-        let inp = ui
-            .horizontal(|ui| {
-                ui.add_space(reserve);
-                self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, paint_enabled)
-            })
-            .inner;
-        // Körperteil-Schalter (wie bei Skindex) oben links in der 3D-Ansicht
-        let panel = Rect::from_min_size(top_left + egui::vec2(6.0, 6.0), egui::vec2(166.0, 240.0));
-        ui.painter().rect_filled(panel, 10.0, Color32::from_rgba_unmultiplied(40, 43, 51, 235));
-        ui.painter().rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_gray(64)), StrokeKind::Inside);
-        // Fläche hinter den Schaltern fängt Klicks ab, damit dort nicht gemalt/gedreht wird
-        ui.interact(panel, ui.scope_id().with("parts_panel_bg"), Sense::click_and_drag());
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(panel.shrink(10.0)).layout(egui::Layout::top_down(egui::Align::Min)));
-        self.ui_parts(&mut child);
-        let over_panel = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| panel.contains(p));
-        self.hover3d = if over_panel { None } else { inp.hover };
+        let inp = self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, paint_enabled);
+        self.hover3d = inp.hover;
         if inp.stroke_started {
             if let Some((x, y)) = inp.texels.first().copied().or(inp.hover) {
                 let prev_tool = self.tool;

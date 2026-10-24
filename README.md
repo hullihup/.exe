@@ -13,7 +13,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Beim Start erscheint eine Startseite. Dort startest du ein **neues Projekt** (Minecraft Skin Editor oder Skin-Mixer) oder machst mit dem **letzten Projekt** weiter.
 - Projekte werden **im Programm gespeichert** (unter `%APPDATA%\SkinStudio`). Du musst keine Dateien verwalten.
 - Beim Schließen fragt das Programm, ob du speichern möchtest. Beim nächsten Start ist das Projekt wieder da.
-- Projekte lassen sich umbenennen und löschen. Ein PNG kannst du als neues Projekt importieren.
+- Projekte lassen sich umbenennen und löschen. Ein PNG kannst du als neues Projekt importieren – oder im Editor jederzeit über „📂 Importieren“ in ein bestehendes Projekt laden (auch bei leerem Start).
 
 ### 🎨 Editor
 - **Stift**, **Radierer**, **Füllen** (Eimer), **Pipette**, **Linie**, **Rechteck**, **Farbe ersetzen**
@@ -22,7 +22,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - **Spiegeln**: alles, was du malst, erscheint auch auf der anderen Körperseite
 - **Rückgängig / Wiederholen** (bis zu 300 Schritte)
 - **Die große 3D-Ansicht ist die Hauptansicht**: direkt auf dem Modell malen, mit der rechten Maustaste drehen
-- **Körperteile ausblenden wie bei Skindex**: 1. und 2. Ebene sowie Kopf, Körper, Arme und Beine per Klick ausblenden, damit man an verdeckte Stellen kommt (Rechtsklick: nur dieses Teil zeigen)
+- **Körperteile ausblenden wie bei Skindex** (rechte Leiste): 1. und 2. Ebene sowie Kopf, Körper, Arme und Beine per Klick ausblenden, damit man an verdeckte Stellen kommt (Rechtsklick: nur dieses Teil zeigen)
 - Wegradierte Stellen bleiben anklickbar und lassen sich wieder bemalen
 - Die 2D-Textur ist standardmäßig eingeklappt und lässt sich über den Pfeil rechts ausklappen
 - Classic- (4 px) und Slim-Arme (3 px), mit automatischer Umrechnung

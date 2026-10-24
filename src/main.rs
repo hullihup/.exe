@@ -634,6 +634,14 @@ impl App {
                     {
                         self.save_project(&ctx);
                     }
+                    if self.screen == Screen::Editor
+                        && ui
+                            .add(egui::Button::new("📂  Importieren").min_size(egui::vec2(110.0, 26.0)))
+                            .on_hover_text("Einen PNG-Skin in dieses Projekt laden (Strg+O) – Strg+Z macht es rückgängig")
+                            .clicked()
+                    {
+                        self.import_into_project(&ctx);
+                    }
                     ui.label(RichText::new(elide(&name, 28)).strong());
                 }
             });
@@ -1029,6 +1037,10 @@ impl eframe::App for App {
                 });
                 egui::Panel::right("colors").resizable(false).exact_size(254.0).show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(4.0);
+                        self.editor.ui_parts(ui);
+                        ui.add_space(6.0);
+                        ui.separator();
                         self.editor.ui_colors(ui);
                         ui.add_space(8.0);
                         ui.separator();
@@ -1057,6 +1069,9 @@ impl eframe::App for App {
                     .frame(egui::Frame::NONE.fill(Color32::from_rgb(30, 32, 38)).inner_margin(egui::Margin::same(8)))
                     .show(ui, |ui| self.editor.ui_preview(ui));
                 self.editor.ui_adjust_window(&ctx);
+                if std::mem::take(&mut self.editor.import_requested) {
+                    self.import_into_project(&ctx);
+                }
             }
             Screen::Mixer => {
                 self.mixer.recompute();
