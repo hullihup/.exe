@@ -448,4 +448,11 @@ pub static EN: &[(&str, &str)] = &[
     ("Benutzernamen haben 3–16 Zeichen: Buchstaben, Zahlen und _", "Usernames have 3–16 characters: letters, numbers and _"),
     ("Dieser Spieler benutzt den Standard-Skin.", "This player uses the default skin."),
     ("Der Skin konnte nicht geladen werden.", "The skin could not be loaded."),
+    ("{0} – aktueller Skin", "{0} – current skin"),
+    ("Skins von {0} ({1})", "Skins of {0} ({1})"),
+    ("Frühere Skins erscheinen hier, sobald Skin Studio sie einmal gesehen hat.", "Earlier skins show up here once Skin Studio has seen them."),
+    ("Aus deinem Minecraft-Launcher ({0})", "From your Minecraft Launcher ({0})"),
+    ("Gewählter Skin", "Selected skin"),
+    ("Ohne Skin startest du mit:", "Without a skin you start with:"),
+    ("gesehen {0}", "seen {0}"),
 ];
