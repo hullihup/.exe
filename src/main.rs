@@ -154,6 +154,9 @@ struct App {
     /// Nach dem Download einmal fragen, ob neu gestartet werden soll
     restart_prompt: bool,
     restart_prompted: bool,
+    /// Fehler beim Installieren eines Updates (wird als Fenster angezeigt)
+    update_installing: bool,
+    update_error: Option<String>,
 }
 
 impl App {
@@ -182,6 +185,8 @@ impl App {
             update_checked: false,
             restart_prompt: false,
             restart_prompted: false,
+            update_installing: false,
+            update_error: None,
         };
         // Datei per Kommandozeile / „Öffnen mit“: eine Datei → neues Projekt, mehrere → Mixer
         let args: Vec<PathBuf> =
@@ -574,6 +579,7 @@ impl App {
             || self.pending.is_some()
             || self.update_confirm
             || self.restart_prompt
+            || self.update_error.is_some()
     }
 
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1402,10 +1408,51 @@ impl App {
                 });
                 if modal.inner == 1 {
                     self.updater.install(ctx);
+                    self.update_installing = true;
                     self.update_confirm = false;
                 } else if modal.inner == 2 || modal.should_close() {
                     self.update_confirm = false;
                 }
+            }
+        }
+
+        // Update fehlgeschlagen → deutlich anzeigen
+        if self.update_installing {
+            match self.updater.state() {
+                UpdateState::Failed(e) => {
+                    self.update_installing = false;
+                    self.update_error = Some(e);
+                }
+                UpdateState::Downloading(_) => {}
+                _ => self.update_installing = false,
+            }
+        }
+        if let Some(err) = self.update_error.clone() {
+            let modal = egui::Modal::new(egui::Id::unique("update_error")).show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.heading(t("⚠ Update hat nicht geklappt"));
+                ui.add_space(4.0);
+                ui.label(RichText::new(&err).color(ORANGE));
+                ui.add_space(6.0);
+                ui.label(RichText::new(t("Tipp: Prüfe die Internetverbindung. Wenn der Virenschutz die Datei blockiert, versuch es nochmal oder lade die neue SkinStudio.exe von GitHub herunter und starte sie – sie aktualisiert die Installation.")).small().weak());
+                ui.add_space(10.0);
+                let mut r = 0;
+                ui.horizontal(|ui| {
+                    let b = egui::Button::new(RichText::new(t("🔄 Nochmal versuchen")).strong().color(Color32::WHITE)).fill(ORANGE);
+                    if ui.add(b).clicked() {
+                        r = 1;
+                    }
+                    if ui.button(t("Schließen")).clicked() {
+                        r = 2;
+                    }
+                });
+                r
+            });
+            if modal.inner == 1 {
+                self.update_error = None;
+                self.updater.check(ctx);
+            } else if modal.inner == 2 || modal.should_close() {
+                self.update_error = None;
             }
         }
 
@@ -1908,6 +1955,10 @@ fn run_window(
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version") {
+        println!("{}", updater::VERSION_MARKER);
+        return Ok(());
+    }
     let settings = project::load_settings();
     i18n::set_lang(settings.lang.unwrap_or_else(i18n::system_lang));
 

@@ -9,6 +9,8 @@ use eframe::egui;
 use crate::i18n::{t, t1};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Steht so in jeder exe – damit lässt sich prüfen, ob wirklich die neue Version heruntergeladen wurde.
+pub const VERSION_MARKER: &str = concat!("SkinStudioVersion=", env!("CARGO_PKG_VERSION"), ";");
 /// Hier liegen `version.txt` (z. B. „1.2.0“) und `SkinStudio.exe` der neuesten Version.
 pub const UPDATE_BASE: &str = "https://raw.githubusercontent.com/hullihup/.exe/main/";
 
@@ -68,19 +70,23 @@ fn hide(_: &mut std::process::Command) {}
 /// ersatzweise mit PowerShell. So braucht das Programm keinen eigenen HTTPS-Code.
 pub fn http_get(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
     let mut cmd = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
-    cmd.args(["-fsSL", "--max-time", "120", "-A", "SkinStudio-Updater"]);
+    // große Dateien dürfen auch bei langsamem Internet länger brauchen
+    let max_time = if out.is_some() { "900" } else { "60" };
+    cmd.args(["-fsSL", "--retry", "2", "--max-time", max_time, "-A", "SkinStudio-Updater"]);
     if let Some(p) = out {
         cmd.arg("-o").arg(p);
     }
     cmd.arg(url);
     hide(&mut cmd);
-    match cmd.output() {
+    let curl_err = match cmd.output() {
         Ok(res) if res.status.success() => return Ok(res.stdout),
-        Ok(_) => return Err(t("Der Update-Server ist nicht erreichbar.").into()),
-        Err(e) if !cfg!(windows) => return Err(t1("Download nicht möglich: {0}", e)),
-        Err(_) => {}
+        Ok(res) => String::from_utf8_lossy(&res.stderr).trim().to_string(),
+        Err(e) => e.to_string(),
+    };
+    if !cfg!(windows) {
+        return Err(t1("Der Update-Server ist nicht erreichbar. ({0})", curl_err));
     }
-    // Windows ohne curl.exe: PowerShell
+    // Windows: notfalls mit PowerShell
     let script = match out {
         Some(p) => format!(
             "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{}'",
@@ -93,7 +99,7 @@ pub fn http_get(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
     hide(&mut ps);
     let res = ps.output().map_err(|e| t1("Download nicht möglich: {0}", e))?;
     if !res.status.success() {
-        return Err(t("Der Update-Server ist nicht erreichbar.").into());
+        return Err(t1("Der Update-Server ist nicht erreichbar. ({0})", curl_err));
     }
     Ok(res.stdout)
 }
@@ -118,7 +124,8 @@ impl Updater {
         let me = self.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = http_get(&format!("{}version.txt", base_url()), None);
+            // Zeitstempel anhängen, damit kein veralteter Stand aus einem Zwischenspeicher kommt
+            let result = http_get(&format!("{}version.txt?t={}", base_url(), crate::project::now()), None);
             let new_state = match result {
                 Ok(bytes) => {
                     let remote = String::from_utf8_lossy(&bytes).trim().to_string();
@@ -144,7 +151,7 @@ impl Updater {
         let me = self.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let r = download_and_swap();
+            let r = download_and_swap(&version);
             me.set(match r {
                 Ok(()) => State::Ready(version),
                 Err(e) => State::Failed(e),
@@ -154,23 +161,46 @@ impl Updater {
     }
 }
 
-fn download_and_swap() -> Result<(), String> {
+/// Umbenennen mit Wiederholungen: Virenscanner sperren frisch geladene Dateien oft ein paar Sekunden.
+fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut last = None;
+    for _ in 0..40 {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    Err(last.unwrap())
+}
+
+fn contains(data: &[u8], needle: &[u8]) -> bool {
+    data.windows(needle.len()).any(|w| w == needle)
+}
+
+fn download_and_swap(version: &str) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = me.parent().ok_or("?")?.to_path_buf();
     let new_file = dir.join("SkinStudio.update.exe");
     let _ = std::fs::remove_file(&new_file);
-    http_get(&format!("{}SkinStudio.exe", base_url()), Some(&new_file))?;
+    http_get(&format!("{}SkinStudio.exe?v={version}", base_url()), Some(&new_file))?;
     // Prüfen, ob wirklich ein Windows-Programm angekommen ist
     let data = std::fs::read(&new_file).map_err(|e| e.to_string())?;
     if data.len() < 1_000_000 || &data[..2] != b"MZ" {
         let _ = std::fs::remove_file(&new_file);
         return Err(t("Die heruntergeladene Datei ist beschädigt.").into());
     }
+    // Ab 1.4.2 steht die Version in der exe: noch alte Datei auf dem Server? Dann später nochmal.
+    let has_marker = contains(&data, b"SkinStudioVersion=");
+    if has_marker && !contains(&data, format!("SkinStudioVersion={version};").as_bytes()) {
+        let _ = std::fs::remove_file(&new_file);
+        return Err(t("Der Server liefert noch die alte Datei – bitte in ein paar Minuten nochmal versuchen.").into());
+    }
     // Die laufende exe kann umbenannt (aber nicht überschrieben) werden
     let old = dir.join("SkinStudio.old.exe");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&me, &old).map_err(|e| t1("Update fehlgeschlagen: {0}", e))?;
-    if let Err(e) = std::fs::rename(&new_file, &me) {
+    rename_retry(&me, &old).map_err(|e| t1("Update fehlgeschlagen: {0}", e))?;
+    if let Err(e) = rename_retry(&new_file, &me) {
         let _ = std::fs::rename(&old, &me);
         return Err(t1("Update fehlgeschlagen: {0}", e));
     }
@@ -190,7 +220,9 @@ pub fn cleanup_old() {
 /// Startet die (neue) exe und gibt ihren Pfad zurück.
 pub fn restart() -> Option<PathBuf> {
     let me = std::env::current_exe().ok()?;
-    std::process::Command::new(&me).arg("--updated").spawn().ok()?;
+    // Startoptionen (z. B. --portable) übernehmen
+    let keep: Vec<String> = std::env::args().skip(1).filter(|a| matches!(a.as_str(), "--portable" | "--no-install")).collect();
+    std::process::Command::new(&me).args(keep).arg("--updated").spawn().ok()?;
     Some(me)
 }
 

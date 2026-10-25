@@ -455,4 +455,9 @@ pub static EN: &[(&str, &str)] = &[
     ("Gewählter Skin", "Selected skin"),
     ("Ohne Skin startest du mit:", "Without a skin you start with:"),
     ("gesehen {0}", "seen {0}"),
+    ("Der Update-Server ist nicht erreichbar. ({0})", "The update server is not reachable. ({0})"),
+    ("Der Server liefert noch die alte Datei – bitte in ein paar Minuten nochmal versuchen.", "The server still delivers the old file – please try again in a few minutes."),
+    ("⚠ Update hat nicht geklappt", "⚠ The update did not work"),
+    ("Tipp: Prüfe die Internetverbindung. Wenn der Virenschutz die Datei blockiert, versuch es nochmal oder lade die neue SkinStudio.exe von GitHub herunter und starte sie – sie aktualisiert die Installation.", "Tip: Check your internet connection. If your antivirus blocks the file, try again or download the new SkinStudio.exe from GitHub and start it – it updates the installation."),
+    ("🔄 Nochmal versuchen", "🔄 Try again"),
 ];
