@@ -41,7 +41,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - PNG per Drag & Drop ins Fenster ziehen
 
 ### 👫 Skin-Mixer
-- **Outfit-Vorlagen** (Winterjacke, Anzug, Schlafanzug, Hoodie, Trainingsanzug, Sommer, Ritter, Arzt, Polizei, Koch, Weihnachtsmann, Ninja, Astronaut, Pirat, Latzhose, Skelett): ein Klick zieht deinem Kopf das Outfit an, die Hautfarbe wird automatisch angepasst. Die Vorschaubilder zeigen schon deinen eigenen Kopf.
+- **18 Outfit-Vorlagen** (Winterjacke, Anzug, Schlafanzug, Hoodie, Trainingsanzug, Sommer, Lederjacke, Ritter, Arzt, Polizei, Feuerwehr, Koch, Weihnachtsmann, Ninja, Astronaut, Pirat, Latzhose, Skelett) im Stil handgepixelter Skins: eigene Farbpaletten mit Licht und Schatten, Stoffstruktur, Nähte, Taschen und 3D-Teile auf der 2. Ebene. Ein Klick zieht deinem Kopf das Outfit an, die Hautfarbe (samt Schattierung) wird automatisch angepasst. Die Vorschaubilder zeigen schon deinen eigenen Kopf.
 - Dein Projekt-Skin ist automatisch als Skin A dabei
 - **Bis zu 26 Skins (A–Z)** laden (mehrere Dateien auf einmal oder per Drag & Drop) und für jedes Körperteil und jede Ebene wählen, von welchem Skin es kommt
 - **1. und 2. Ebene gleich** (Standard): wählst du z. B. beim Kopf B, bekommt auch die 2. Ebene B

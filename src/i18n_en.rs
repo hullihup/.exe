@@ -434,4 +434,6 @@ pub static EN: &[(&str, &str)] = &[
     ("Pirat", "Pirate"),
     ("Latzhose", "Overalls"),
     ("Skelett", "Skeleton"),
+    ("Lederjacke", "Leather jacket"),
+    ("Feuerwehr", "Firefighter"),
 ];

@@ -126,6 +126,8 @@ pub enum MixerAction {
 #[derive(Clone, Debug)]
 pub struct TonePalette {
     pub main: Rgba,
+    /// Bei Outfit-Vorlagen: genau diese Farben sind Haut (sonst leer)
+    exact: Vec<Rgba>,
     main_lab: [f32; 3],
     /// Lab-Werte aller Hautschattierungen, nach Helligkeit sortiert
     shades: Vec<[f32; 3]>,
@@ -135,7 +137,7 @@ impl TonePalette {
     fn from_color(c: Rgba) -> Self {
         let lab = color::to_lab(c);
         let shades = [-14.0, -8.0, -4.0, 0.0, 4.0, 8.0].iter().map(|d| [lab[0] + d, lab[1], lab[2]]).collect();
-        TonePalette { main: c, main_lab: lab, shades }
+        TonePalette { main: c, exact: Vec::new(), main_lab: lab, shades }
     }
     fn l_range(&self) -> (f32, f32) {
         let lo = self.shades.first().map(|s| s[0]).unwrap_or(self.main_lab[0]).min(self.main_lab[0]);
@@ -354,7 +356,9 @@ impl Mixer {
         let Some(skin) = crate::presets::make(id) else { return };
         let name = crate::presets::name_of(id).unwrap_or("Outfit").to_string();
         let existing = self.slots.iter().position(|s| s.kind == SlotKind::Outfit(id.to_string()));
-        let Some(k) = existing.or_else(|| self.push_slot(None, skin, Model::Classic, name.clone(), SlotKind::Outfit(id.to_string())))
+        // eine andere Vorlage wird ersetzt, damit sich nicht immer mehr Skins ansammeln
+        let other = self.slots.iter().position(|s| matches!(s.kind, SlotKind::Outfit(_)));
+        let Some(k) = existing.or_else(|| self.push_slot(other, skin, Model::Classic, name.clone(), SlotKind::Outfit(id.to_string())))
         else {
             return;
         };
@@ -1175,7 +1179,7 @@ fn palette_from(cand: &[([f32; 3], f32)], min_weight: f32) -> Option<TonePalette
         .collect();
     shades.sort_by(|a, b| a[0].total_cmp(&b[0]));
     shades.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.8 && (a[1] - b[1]).abs() < 0.8 && (a[2] - b[2]).abs() < 0.8);
-    Some(TonePalette { main: color::from_lab(main_lab, 255), main_lab, shades })
+    Some(TonePalette { main: color::from_lab(main_lab, 255), exact: Vec::new(), main_lab, shades })
 }
 
 /// Ermittelt die Hautfarbe eines Skins: zuerst am Gesicht, sonst an Händen und Hals.
@@ -1214,24 +1218,20 @@ pub fn detect_palette(s: &Skin, model: Model) -> Option<TonePalette> {
     palette_from(&cand, 8.0)
 }
 
-/// Palette einer Outfit-Vorlage: genau die Platzhalter-Hautfarbe samt Licht/Schatten.
-fn outfit_palette(s: &Skin) -> TonePalette {
+/// Palette einer Outfit-Vorlage: genau die Platzhalter-Hauttöne samt Licht/Schatten.
+fn outfit_palette(_s: &Skin) -> TonePalette {
+    let ramp = crate::presets::skin_ramp();
     let mut p = TonePalette::from_color(crate::presets::SKIN_PH);
-    let ph = color::to_lab(crate::presets::SKIN_PH);
-    for c in &s.px {
-        if c[3] == 255 {
-            let lab = color::to_lab(*c);
-            if shade_dist(lab, ph) < 3.0 {
-                p.shades.push(lab);
-            }
-        }
-    }
-    p.shades.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    p.shades = ramp.iter().map(|c| color::to_lab(*c)).collect();
+    p.exact = ramp.to_vec();
     p
 }
 
 /// Gehört diese Farbe zur Haut des Skins (inkl. Schattierungen)?
 fn is_skin(c: Rgba, pal: &TonePalette, tol: f32) -> bool {
+    if !pal.exact.is_empty() {
+        return pal.exact.contains(&c);
+    }
     let lab = color::to_lab(c);
     // Weiß, Grau, Schwarz sind keine Haut (Haut hat immer etwas Farbe)
     if color::chroma(lab) < (color::chroma(pal.main_lab) * 0.35).max(3.0) {
