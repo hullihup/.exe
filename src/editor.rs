@@ -73,13 +73,10 @@ impl Tool {
             Tool::Shade => t("Links aufhellen, rechts abdunkeln. Ideal für Falten und Schatten."),
             Tool::Bucket => t("Füllt zusammenhängende, ähnliche Pixel."),
             Tool::Replace => t("Erst die alte Farbe im Skin anklicken, dann die neue Farbe – überall wird getauscht."),
-            Tool::Line => t("Ziehen für eine gerade Linie (nur in der 2D-Ansicht)."),
-            Tool::Rect => t("Ziehen für ein Rechteck (nur in der 2D-Ansicht)."),
+            Tool::Line => t("Auf dem Modell oder in der 2D-Textur von Anfang bis Ende ziehen. Die Linie bleibt auf der Fläche, auf der du anfängst."),
+            Tool::Rect => t("Auf dem Modell oder in der 2D-Textur von einer Ecke zur anderen ziehen. Das Rechteck bleibt auf der Fläche, auf der du anfängst."),
             Tool::Picker => t("Nimmt eine Farbe auf. Tipp: Alt + Klick geht mit jedem Werkzeug."),
         }
-    }
-    fn paints_in_3d(self) -> bool {
-        !matches!(self, Tool::Line | Tool::Rect)
     }
 }
 
@@ -510,8 +507,16 @@ impl Editor {
     }
 
     fn stroke_to(&mut self, x: i32, y: i32) {
+        let model = self.model;
         let Some(st) = &mut self.stroke else { return };
         st.end = (x, y);
+        // Im 3D-Modell bleiben Linie und Rechteck auf der Fläche, auf der sie anfangen
+        if st.in3d && matches!(st.tool, Tool::Line | Tool::Rect) {
+            if let Some(ti) = skin::texel_info(model, st.start.0 as usize, st.start.1 as usize) {
+                let (fx, fy) = (st.start.0 - ti.i as i32, st.start.1 - ti.j as i32);
+                st.end = (x.clamp(fx, fx + ti.fw as i32 - 1), y.clamp(fy, fy + ti.fh as i32 - 1));
+            }
+        }
         match st.tool {
             Tool::Pencil | Tool::Eraser | Tool::Noise | Tool::Shade => {}
             Tool::Picker => {
@@ -1207,16 +1212,19 @@ impl Editor {
         let h = (ui.available_height() - 64.0).max(120.0);
         let size = egui::vec2(ui.available_width(), h);
         let mut highlight = self.hover_footprint(self.hover2d.or(self.hover3d));
-        if self.stroke.is_some() {
+        if let Some(st) = &self.stroke {
             highlight.clear();
+            // Live-Vorschau für Linie und Rechteck
+            if matches!(st.tool, Tool::Line | Tool::Rect) {
+                highlight = self.shape_points(st).into_iter().filter(|&(x, y)| x >= 0 && y >= 0).map(|(x, y)| (x as usize, y as usize)).collect();
+            }
         }
         if self.tool == Tool::Replace {
             highlight.extend(self.replace_matches());
         }
         let alt = ui.input(|i| i.modifiers.alt);
-        let paint_enabled = self.tool.paints_in_3d() || alt;
         let skin_copy = self.skin.clone();
-        let inp = self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, paint_enabled);
+        let inp = self.preview.show(ui, size, &skin_copy, self.model, self.vis, &highlight, true);
         self.hover3d = inp.hover;
         if inp.stroke_started {
             if let Some((x, y)) = inp.texels.first().copied().or(inp.hover) {

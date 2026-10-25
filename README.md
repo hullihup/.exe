@@ -22,7 +22,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Projekte lassen sich umbenennen und löschen. Ein PNG kannst du als neues Projekt importieren – oder im Editor jederzeit über „📂 Importieren“ in ein bestehendes Projekt laden (auch bei leerem Start).
 
 ### 🎨 Editor
-- **Stift**, **Radierer**, **Füllen** (Eimer), **Pipette**, **Linie**, **Rechteck**
+- **Stift**, **Radierer**, **Füllen** (Eimer), **Pipette**, **Linie**, **Rechteck** (direkt auf dem 3D-Modell oder in der 2D-Textur ziehen, mit Vorschau; bleibt auf der Fläche, auf der du anfängst)
 - **Farbe ersetzen**: erst die alte Farbe im Skin anklicken, dann die neue – die alte wird überall ausgetauscht (die betroffenen Pixel werden vorher markiert; Toleranz einstellbar)
 - **Rauschpinsel**: malt die gewählte Farbe in zufälligen Helligkeitsstufen, für lebendige Flächen wie Stoff, Haare oder Stein (Stärke, Stufen und Farbton-Streuung einstellbar)
 - **Licht/Schatten**: hellt auf (Linksklick) oder dunkelt ab (Rechtsklick), auf Wunsch mit Farbton-Verschiebung wie in der Pixel-Art
