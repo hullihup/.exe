@@ -1,6 +1,7 @@
 //! Skin-Mixer: bis zu 26 Skins (A–Z) kombinieren – z. B. Partnerlook: eigener Kopf +
 //! fremdes Outfit. Mit Hände-Auswahl, automatischer Hautfarben-Anpassung und Outfit-Farbvarianten.
 
+use crate::i18n::t;
 use eframe::egui::{self, Color32, ColorImage, RichText, Sense, TextureHandle, TextureOptions};
 
 use crate::color::{self, Rng};
@@ -57,6 +58,14 @@ impl Slot {
     }
 }
 
+/// Verknüpfung mit einem Projekt, in dem das Ergebnis weiterbearbeitet wird.
+pub struct MixLink {
+    pub project_id: String,
+    pub name: String,
+    /// Mix-Ergebnis zum Zeitpunkt der Übergabe (ohne eigene Änderungen)
+    pub base: Skin,
+}
+
 #[derive(Clone, PartialEq)]
 struct Inputs {
     slots: Vec<(Skin, Model)>,
@@ -67,6 +76,7 @@ struct Inputs {
     tone_override: Option<Rgba>,
     outfit: (f32, f32, f32),
     model_choice: Option<Model>,
+    patch: Vec<Option<Rgba>>,
 }
 
 pub enum MixerAction {
@@ -108,7 +118,12 @@ pub struct Mixer {
     outfit_bright: f32,
     model_choice: Option<Model>,
     pub result: Skin,
+    /// Ergebnis ohne die Änderungen aus dem Editor
+    pub raw_result: Skin,
     pub result_model: Model,
+    pub link: Option<MixLink>,
+    /// Pixel, die im Editor geändert wurden (überschreiben das Mix-Ergebnis)
+    patch: Vec<Option<Rgba>>,
     pub vis: Visibility,
     pub preview: Preview,
     last_inputs: Option<Inputs>,
@@ -134,7 +149,10 @@ impl Mixer {
             outfit_bright: 0.0,
             model_choice: None,
             result: Skin::blank(),
+            raw_result: Skin::blank(),
             result_model: Model::Classic,
+            link: None,
+            patch: Vec::new(),
             vis: Visibility::default(),
             preview: Preview::new(),
             last_inputs: None,
@@ -164,6 +182,25 @@ impl Mixer {
             }
             _ => None,
         }
+    }
+
+    /// Änderungen aus dem verknüpften Projekt übernehmen (`skin` = aktueller Stand im Editor).
+    pub fn sync_from_editor(&mut self, skin: &Skin) {
+        let Some(link) = &self.link else { return };
+        let patch: Vec<Option<Rgba>> =
+            skin.px.iter().zip(&link.base.px).map(|(e, b)| if e != b { Some(*e) } else { None }).collect();
+        if patch.iter().all(|p| p.is_none()) {
+            if !self.patch.is_empty() {
+                self.patch.clear();
+            }
+        } else if patch != self.patch {
+            self.patch = patch;
+        }
+    }
+
+    pub fn unlink(&mut self) {
+        self.link = None;
+        self.patch.clear();
     }
 
     pub fn is_full(&self) -> bool {
@@ -200,7 +237,7 @@ impl Mixer {
         }
         self.choice[HANDS] = [Src::Same, Src::Same];
         self.tone_transfer = true;
-        self.last_preset = format!("Partnerlook: Kopf {} + Outfit {}", letter(head as usize), letter(outfit as usize));
+        self.last_preset = crate::i18n::t2("Partnerlook: Kopf {0} + Outfit {1}", letter(head as usize), letter(outfit as usize));
     }
 
     fn preset_parts(&mut self, from_b: &[Part], name: &str) {
@@ -227,7 +264,7 @@ impl Mixer {
         self.choice[Part::LeftArm.idx()] = self.choice[Part::RightArm.idx()];
         self.choice[Part::LeftLeg.idx()] = self.choice[Part::RightLeg.idx()];
         self.choice[HANDS] = [Src::Same, Src::Same];
-        self.last_preset = "Zufallsmix".into();
+        self.last_preset = t("Zufallsmix").into();
     }
 
     // ------------------------------------------------------------- Berechnung
@@ -249,6 +286,7 @@ impl Mixer {
             tone_override: self.tone_override,
             outfit: (self.outfit_hue, self.outfit_sat, self.outfit_bright),
             model_choice: self.model_choice,
+            patch: self.patch.clone(),
         };
         if self.last_inputs.as_ref() == Some(&inputs) {
             return;
@@ -362,6 +400,13 @@ impl Mixer {
             }
         }
 
+        self.raw_result = out.clone();
+        // Änderungen aus dem Editor drüberlegen
+        for (idx, p) in self.patch.iter().enumerate() {
+            if let Some(c) = p {
+                out.px[idx] = *c;
+            }
+        }
         self.result = out;
         self.result_model = dst_model;
         self.last_inputs = Some(inputs);
@@ -404,34 +449,34 @@ impl Mixer {
                         });
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
-                            ui.selectable_value(&mut s.model, Model::Classic, RichText::new("Classic").small());
-                            ui.selectable_value(&mut s.model, Model::Slim, RichText::new("Slim").small());
+                            ui.selectable_value(&mut s.model, Model::Classic, RichText::new(t("Classic")).small());
+                            ui.selectable_value(&mut s.model, Model::Slim, RichText::new(t("Slim")).small());
                         });
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             match &tone {
-                                Some(t) => {
-                                    ui.label(RichText::new("Haut").small().weak());
+                                Some(pal) => {
+                                    ui.label(RichText::new(t("Haut")).small().weak());
                                     let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 11.0), Sense::hover());
-                                    ui.painter().rect_filled(r, 3.0, c32(t.main));
+                                    ui.painter().rect_filled(r, 3.0, c32(pal.main));
                                 }
                                 None => {
-                                    ui.label(RichText::new("Haut: –").small().weak())
-                                        .on_hover_text("Keine Hautfarbe im Gesicht gefunden – hier wird nichts umgefärbt.");
+                                    ui.label(RichText::new(t("Haut: –")).small().weak())
+                                        .on_hover_text(t("Keine Hautfarbe im Gesicht gefunden – hier wird nichts umgefärbt."));
                                 }
                             }
                             ui.add_space(4.0);
-                            if ui.small_button("📂").on_hover_text("Durch andere PNG-Datei ersetzen").clicked() {
+                            if ui.small_button("📂").on_hover_text(t("Durch andere PNG-Datei ersetzen")).clicked() {
                                 action = MixerAction::Load(Some(k));
                             }
                             if ui
                                 .add_enabled(editor_available, egui::Button::new("✏").small())
-                                .on_hover_text("Durch Skin aus dem Editor ersetzen")
+                                .on_hover_text(t("Durch Skin aus dem Editor ersetzen"))
                                 .clicked()
                             {
                                 action = MixerAction::FromEditor(Some(k));
                             }
-                            if ui.small_button("✖").on_hover_text("Entfernen").clicked() {
+                            if ui.small_button("✖").on_hover_text(t("Entfernen")).clicked() {
                                 remove = Some(k);
                             }
                         });
@@ -449,7 +494,7 @@ impl Mixer {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "PNG-Skins hierher ziehen\n(bis zu 26 Stück)",
+                t("PNG-Skins hierher ziehen\n(bis zu 26 Stück)"),
                 egui::FontId::proportional(13.0),
                 ui.visuals().weak_text_color(),
             );
@@ -457,21 +502,21 @@ impl Mixer {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(!self.is_full(), egui::Button::new("➕ Skins laden …"))
-                .on_hover_text("Eine oder mehrere PNG-Dateien hinzufügen")
+                .add_enabled(!self.is_full(), egui::Button::new(t("➕ Skins laden …")))
+                .on_hover_text(t("Eine oder mehrere PNG-Dateien hinzufügen"))
                 .clicked()
             {
                 action = MixerAction::Load(None);
             }
             if ui
-                .add_enabled(editor_available && !self.is_full(), egui::Button::new("✏ Aus Editor"))
-                .on_hover_text("Den Skin aus dem geöffneten Projekt hinzufügen")
+                .add_enabled(editor_available && !self.is_full(), egui::Button::new(t("✏ Aus Editor")))
+                .on_hover_text(t("Den Skin aus dem geöffneten Projekt hinzufügen"))
                 .clicked()
             {
                 action = MixerAction::FromEditor(None);
             }
         });
-        if self.slots.len() >= 2 && ui.button("🔃  A und B tauschen").clicked() {
+        if self.slots.len() >= 2 && ui.button(t("🔃  A und B tauschen")).clicked() {
             self.slots.swap(0, 1);
         }
         ui.add_space(8.0);
@@ -493,8 +538,8 @@ impl Mixer {
             match s {
                 Src::Slot(i) => letter(i as usize).to_string(),
                 Src::Empty => "–".into(),
-                Src::Same => "Arm".into(),
-                Src::SkinTone => "Haut".into(),
+                Src::Same => t("Arm").into(),
+                Src::SkinTone => t("Haut").into(),
             }
         };
         let mut options: Vec<Src> = Vec::new();
@@ -508,9 +553,9 @@ impl Mixer {
         options.push(Src::Empty);
         let tip = |s: Src| match s {
             Src::Slot(i) => names.get(i as usize).cloned().unwrap_or_else(|| format!("Skin {}", letter(i as usize))),
-            Src::Empty => "leer".into(),
-            Src::Same => "so wie beim Arm".into(),
-            Src::SkinTone => "in der Hautfarbe des Kopfes".into(),
+            Src::Empty => t("leer").into(),
+            Src::Same => t("so wie beim Arm").into(),
+            Src::SkinTone => t("in der Hautfarbe des Kopfes").into(),
         };
         if options.len() <= 3 {
             ui.horizontal(|ui| {
@@ -534,36 +579,36 @@ impl Mixer {
     pub fn ui_settings(&mut self, ui: &mut egui::Ui) {
         let n = self.slots.len();
         let names: Vec<String> = self.slots.iter().map(|s| s.name.clone()).collect();
-        heading(ui, "VORLAGEN");
+        heading(ui, t("VORLAGEN"));
         ui.horizontal_wrapped(|ui| {
             let two = n >= 2;
-            if ui.add_enabled(two, egui::Button::new("💑 Kopf A + Outfit B")).clicked() {
+            if ui.add_enabled(two, egui::Button::new(t("💑 Kopf A + Outfit B"))).clicked() {
                 self.preset_partner(0, 1);
             }
-            if ui.add_enabled(two, egui::Button::new("💑 Kopf B + Outfit A")).clicked() {
+            if ui.add_enabled(two, egui::Button::new(t("💑 Kopf B + Outfit A"))).clicked() {
                 self.preset_partner(1, 0);
             }
-            if ui.add_enabled(two, egui::Button::new("👕 Oberteil von B")).clicked() {
-                self.preset_parts(&[Part::Body, Part::RightArm, Part::LeftArm], "Oberteil von B");
+            if ui.add_enabled(two, egui::Button::new(t("👕 Oberteil von B"))).clicked() {
+                self.preset_parts(&[Part::Body, Part::RightArm, Part::LeftArm], t("Oberteil von B"));
             }
-            if ui.add_enabled(two, egui::Button::new("👖 Hose von B")).clicked() {
-                self.preset_parts(&[Part::RightLeg, Part::LeftLeg], "Hose von B");
+            if ui.add_enabled(two, egui::Button::new(t("👖 Hose von B"))).clicked() {
+                self.preset_parts(&[Part::RightLeg, Part::LeftLeg], t("Hose von B"));
             }
-            if ui.add_enabled(two, egui::Button::new("🎩 Frisur/Hut von B")).clicked() {
-                self.preset_parts(&[], "Frisur/Hut von B");
+            if ui.add_enabled(two, egui::Button::new(t("🎩 Frisur/Hut von B"))).clicked() {
+                self.preset_parts(&[], t("Frisur/Hut von B"));
                 self.choice[Part::Head.idx()][1] = Src::Slot(1);
             }
-            if ui.add_enabled(n >= 1, egui::Button::new("🎲 Zufallsmix")).clicked() {
+            if ui.add_enabled(n >= 1, egui::Button::new(t("🎲 Zufallsmix"))).clicked() {
                 self.preset_random();
             }
         });
 
         ui.add_space(6.0);
-        heading(ui, "KÖRPERTEILE");
+        heading(ui, t("KÖRPERTEILE"));
         egui::Grid::new("mix_parts").num_columns(3).spacing([6.0, 4.0]).striped(true).show(ui, |ui| {
             ui.label("");
-            ui.label(RichText::new("1. Ebene").small());
-            ui.label(RichText::new("2. Ebene").small());
+            ui.label(RichText::new(t("1. Ebene")).small());
+            ui.label(RichText::new(t("2. Ebene")).small());
             ui.end_row();
             for p in Part::ALL {
                 ui.label(p.name());
@@ -572,37 +617,37 @@ impl Mixer {
                 }
                 ui.end_row();
             }
-            ui.label(RichText::new("✋ Hände").strong()).on_hover_text("Unterer Teil beider Arme");
+            ui.label(RichText::new(t("✋ Hände")).strong()).on_hover_text(t("Unterer Teil beider Arme"));
             for l in 0..2 {
                 Self::src_picker(ui, &mut self.choice[HANDS][l], &names, true, l == 0, (HANDS, l));
             }
             ui.end_row();
         });
         ui.horizontal(|ui| {
-            ui.label("Handlänge");
-            ui.add(egui::Slider::new(&mut self.hand_len, 1..=8).suffix(" px"))
-                .on_hover_text("Wie viele Pixel unten am Arm als Hand zählen");
+            ui.label(t("Handlänge"));
+            ui.add(egui::Slider::new(&mut self.hand_len, 1..=8).suffix(t(" px")))
+                .on_hover_text(t("Wie viele Pixel unten am Arm als Hand zählen"));
         });
-        if ui.small_button("✋ Hände in Hautfarbe").on_hover_text("Hände in der Hautfarbe des Kopfes einfärben").clicked() {
+        if ui.small_button(t("✋ Hände in Hautfarbe")).on_hover_text(t("Hände in der Hautfarbe des Kopfes einfärben")).clicked() {
             self.choice[HANDS] = [Src::SkinTone, Src::Empty];
         }
 
         ui.add_space(8.0);
-        heading(ui, "SMART-ANPASSUNG");
-        ui.checkbox(&mut self.tone_transfer, "Hautfarbe automatisch angleichen").on_hover_text(
+        heading(ui, t("SMART-ANPASSUNG"));
+        ui.checkbox(&mut self.tone_transfer, t("Hautfarbe automatisch angleichen")).on_hover_text(
             "Erkennt die Hautfarbe jedes Skins mit allen Schattierungen am Gesicht und färbt sichtbare Haut \
              (Hände, Hals, Beine …), die von einem anderen Skin kommt, passend zum Kopf um.",
         );
         if self.tone_transfer {
             ui.horizontal(|ui| {
-                ui.label("Toleranz");
+                ui.label(t("Toleranz"));
                 ui.add(egui::Slider::new(&mut self.tone_tol, 0.0..=1.0).show_value(false))
-                    .on_hover_text("Höher = auch stärker abweichende Hauttöne werden erkannt");
+                    .on_hover_text(t("Höher = auch stärker abweichende Hauttöne werden erkannt"));
             });
         }
         ui.horizontal(|ui| {
             let mut manual = self.tone_override.is_some();
-            if ui.checkbox(&mut manual, "Eigene Hautfarbe").changed() {
+            if ui.checkbox(&mut manual, t("Eigene Hautfarbe")).changed() {
                 let head = self.slot_idx(self.choice[Part::Head.idx()][0]);
                 let detected = head.and_then(|i| self.tones.get(i).cloned().flatten()).map(|p| p.main);
                 self.tone_override = if manual { detected.or(Some([214, 164, 130, 255])) } else { None };
@@ -617,25 +662,25 @@ impl Mixer {
             }
         });
         ui.add_space(6.0);
-        ui.label("Outfit-Farbe (alles außer Kopf und Haut):");
+        ui.label(t("Outfit-Farbe (alles außer Kopf und Haut):"));
         egui::Grid::new("outfit").num_columns(2).show(ui, |ui| {
-            ui.label("Farbton");
+            ui.label(t("Farbton"));
             ui.add(egui::Slider::new(&mut self.outfit_hue, -180.0..=180.0).suffix("°"));
             ui.end_row();
-            ui.label("Sättigung");
+            ui.label(t("Sättigung"));
             ui.add(egui::Slider::new(&mut self.outfit_sat, -1.0..=1.0));
             ui.end_row();
-            ui.label("Helligkeit");
+            ui.label(t("Helligkeit"));
             ui.add(egui::Slider::new(&mut self.outfit_bright, -1.0..=1.0));
             ui.end_row();
         });
         ui.horizontal(|ui| {
-            if ui.button("🎲 Farbvariante").on_hover_text("Zufällige neue Outfit-Farbe").clicked() {
+            if ui.button(t("🎲 Farbvariante")).on_hover_text(t("Zufällige neue Outfit-Farbe")).clicked() {
                 self.outfit_hue = (self.rng.f32() * 300.0 + 30.0).round() - 180.0;
                 self.outfit_sat = (self.rng.f32() * 0.4 - 0.1).clamp(-0.2, 0.3);
                 self.outfit_bright = self.rng.f32() * 0.2 - 0.1;
             }
-            if ui.button("Zurücksetzen").clicked() {
+            if ui.button(t("Zurücksetzen")).clicked() {
                 self.outfit_hue = 0.0;
                 self.outfit_sat = 0.0;
                 self.outfit_bright = 0.0;
@@ -643,13 +688,13 @@ impl Mixer {
         });
 
         ui.add_space(8.0);
-        heading(ui, "ERGEBNIS-MODELL");
+        heading(ui, t("ERGEBNIS-MODELL"));
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.model_choice, None, "Automatisch");
-            ui.selectable_value(&mut self.model_choice, Some(Model::Classic), "Classic");
-            ui.selectable_value(&mut self.model_choice, Some(Model::Slim), "Slim");
+            ui.selectable_value(&mut self.model_choice, None, t("Automatisch"));
+            ui.selectable_value(&mut self.model_choice, Some(Model::Classic), t("Classic"));
+            ui.selectable_value(&mut self.model_choice, Some(Model::Slim), t("Slim"));
         });
-        ui.label(RichText::new("Arme werden bei Bedarf automatisch zwischen 3 px und 4 px umgerechnet.").small().weak());
+        ui.label(RichText::new(t("Arme werden bei Bedarf automatisch zwischen 3 px und 4 px umgerechnet.")).small().weak());
     }
 
     pub fn ui_result(&mut self, ui: &mut egui::Ui) -> MixerAction {
@@ -658,7 +703,7 @@ impl Mixer {
         if self.slots.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label(
-                    RichText::new("👫  Lade links Skins (oder ziehe PNG-Dateien ins Fenster),\num sie zu kombinieren.")
+                    RichText::new(t("👫  Lade links Skins (oder ziehe PNG-Dateien ins Fenster),\num sie zu kombinieren."))
                         .size(16.0)
                         .weak(),
                 );
@@ -666,9 +711,28 @@ impl Mixer {
             return action;
         }
         ui.horizontal(|ui| {
-            ui.label(RichText::new("ERGEBNIS").small().strong().weak());
+            ui.label(RichText::new(t("ERGEBNIS")).small().strong().weak());
             if !self.last_preset.is_empty() {
                 ui.label(RichText::new(format!("· {}", self.last_preset)).small().weak());
+            }
+            let link_info = self.link.as_ref().map(|l| l.name.clone());
+            if let Some(name) = link_info {
+                let edits = self.patch.iter().filter(|p| p.is_some()).count();
+                let mut unlink = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button(t("Verknüpfung lösen")).clicked() {
+                        unlink = true;
+                    }
+                    ui.label(
+                        RichText::new(crate::i18n::t2("🔗 verknüpft mit „{0}“ · {1} Pixel im Editor geändert", &name, edits))
+                            .small()
+                            .color(crate::ORANGE),
+                    )
+                    .on_hover_text(t("Was du im Editor an diesem Skin änderst, wird hier automatisch übernommen."));
+                });
+                if unlink {
+                    self.unlink();
+                }
             }
         });
         let avail = ui.available_size();
@@ -691,18 +755,18 @@ impl Mixer {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new("✏  Im Editor öffnen").strong()).min_size(egui::vec2(160.0, 32.0))).clicked() {
+            if ui.add(egui::Button::new(RichText::new(t("✏  Im Editor öffnen")).strong()).min_size(egui::vec2(160.0, 32.0))).clicked() {
                 action = MixerAction::OpenInEditor;
             }
-            if ui.add(egui::Button::new(RichText::new("💾  Exportieren").strong()).min_size(egui::vec2(140.0, 32.0))).clicked() {
+            if ui.add(egui::Button::new(RichText::new(t("💾  Exportieren")).strong()).min_size(egui::vec2(140.0, 32.0))).clicked() {
                 action = MixerAction::Export;
             }
             ui.separator();
             use std::f32::consts::PI;
-            if ui.button("Vorne").clicked() {
+            if ui.button(t("Vorne")).clicked() {
                 self.preview.set_view(0.0, 0.1);
             }
-            if ui.button("Hinten").clicked() {
+            if ui.button(t("Hinten")).clicked() {
                 self.preview.set_view(PI, 0.1);
             }
             if ui.button("⟲").clicked() {

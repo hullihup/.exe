@@ -3,13 +3,17 @@
 
 mod color;
 mod editor;
+mod gpu3d;
+mod i18n;
 mod icon_gen;
+mod installer;
 mod mixer;
 mod preview;
 mod project;
 mod render3d;
 mod skin;
 mod ui_util;
+mod updater;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,9 +21,13 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Key, Modifiers, Rect, RichText, Sense, Stroke, StrokeKind};
 
 use editor::{detect_model, Editor};
-use mixer::{Mixer, MixerAction};
+use i18n::{t, t1, t2, Lang};
+use mixer::{MixLink, Mixer, MixerAction};
 use project::ProjectMeta;
 use skin::{Layer, Model, Skin};
+use updater::{State as UpdateState, Updater};
+
+pub const ORANGE: Color32 = Color32::from_rgb(242, 140, 40);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -28,11 +36,15 @@ enum Screen {
     Mixer,
 }
 
-/// Was nach der Frage „Projekt speichern?“ passieren soll.
+/// Was nach der Frage „Speichern?“ passieren soll.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
+    /// Programm beenden
     Close,
-    Home,
+    /// Neustart nach einem Update
+    Restart,
+    /// Einen Tab schließen
+    CloseTab(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,46 +65,66 @@ struct ProjectCard {
     thumb: egui::TextureHandle,
 }
 
+/// Ein offenes Projekt in einem Tab (inaktive Tabs liegen hier, der aktive in `App`).
+type TabData = (ProjectMeta, Editor);
+
 struct App {
     screen: Screen,
+    /// aktives Projekt
     editor: Editor,
-    mixer: Mixer,
     project: Option<ProjectMeta>,
+    /// alle Tabs; an der Stelle `active` steht `None` (das liegt in `editor`/`project`)
+    tabs: Vec<Option<TabData>>,
+    active: usize,
+    mixer: Mixer,
     cards: Option<Vec<ProjectCard>>,
     new_dialog: Option<NewDialog>,
     rename: Option<(String, String)>,
     delete_confirm: Option<(String, String)>,
     pending: Option<Pending>,
+    update_confirm: bool,
     allow_close: bool,
     toast: Option<(String, f64, bool)>,
     show_help: bool,
     title: String,
     logo: Option<egui::TextureHandle>,
+    updater: Updater,
+    update_checked: bool,
+    /// Nach dem Download einmal fragen, ob neu gestartet werden soll
+    restart_prompt: bool,
+    restart_prompted: bool,
 }
-
-const ORANGE: Color32 = Color32::from_rgb(242, 140, 40);
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
+        updater::cleanup_old();
         let mut app = App {
             screen: Screen::Start,
             editor: Editor::new(),
-            mixer: Mixer::new(),
             project: None,
+            tabs: Vec::new(),
+            active: 0,
+            mixer: Mixer::new(),
             cards: None,
             new_dialog: None,
             rename: None,
             delete_confirm: None,
             pending: None,
+            update_confirm: false,
             allow_close: false,
             toast: None,
             show_help: false,
             title: String::new(),
             logo: None,
+            updater: Updater::default(),
+            update_checked: false,
+            restart_prompt: false,
+            restart_prompted: false,
         };
         // Datei per Kommandozeile / „Öffnen mit“: eine Datei → neues Projekt, mehrere → Mixer
-        let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+        let args: Vec<PathBuf> =
+            std::env::args().skip(1).filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
         if args.len() == 1 {
             if let Err(e) = app.project_from_file(&args[0]) {
                 // Programmzeit beginnt bei 0 → Meldung die ersten 5 Sekunden zeigen
@@ -106,18 +138,21 @@ impl App {
             }
             app.screen = Screen::Mixer;
         }
+        if std::env::args().any(|a| a == "--updated") {
+            app.toast = Some((t1("✔ Skin Studio wurde auf Version {0} aktualisiert", updater::VERSION), 5.0, false));
+        }
         app
     }
 
     fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, error: bool) {
-        let t = ctx.input(|i| i.time);
-        self.toast = Some((text.into(), t + if error { 5.0 } else { 2.6 }, error));
+        let time = ctx.input(|i| i.time);
+        self.toast = Some((text.into(), time + if error { 5.0 } else { 2.6 }, error));
     }
 
     // ------------------------------------------------------------------ Dateien
 
     fn read_skin(path: &Path) -> Result<(Skin, Model), String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("Datei konnte nicht gelesen werden: {e}"))?;
+        let bytes = std::fs::read(path).map_err(|e| t1("Datei konnte nicht gelesen werden: {0}", e))?;
         let s = Skin::from_png(&bytes)?;
         let m = detect_model(&s);
         Ok((s, m))
@@ -132,12 +167,12 @@ impl App {
     }
 
     fn pick_png() -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("Minecraft-Skin (PNG)", &["png"]).set_title("Skin öffnen").pick_file()
+        rfd::FileDialog::new().add_filter(t("Minecraft-Skin (PNG)"), &["png"]).set_title(t("Skin öffnen")).pick_file()
     }
 
     fn save_png_dialog(default_name: &str, title: &str) -> Option<PathBuf> {
         let mut p = rfd::FileDialog::new()
-            .add_filter("PNG-Bild", &["png"])
+            .add_filter(t("PNG-Bild"), &["png"])
             .set_title(title)
             .set_file_name(default_name)
             .save_file()?;
@@ -149,8 +184,8 @@ impl App {
 
     fn write_file(&mut self, ctx: &egui::Context, path: &Path, data: &[u8]) {
         match std::fs::write(path, data) {
-            Ok(_) => self.notify(ctx, format!("✔ Exportiert: {}", Self::file_name(path)), false),
-            Err(e) => self.notify(ctx, format!("Exportieren fehlgeschlagen: {e}"), true),
+            Ok(_) => self.notify(ctx, t1("✔ Exportiert: {0}", Self::file_name(path)), false),
+            Err(e) => self.notify(ctx, t1("Exportieren fehlgeschlagen: {0}", e), true),
         }
     }
 
@@ -161,7 +196,7 @@ impl App {
 
     fn export_editor(&mut self, ctx: &egui::Context) {
         let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "skin".into());
-        if let Some(p) = Self::save_png_dialog(&Self::safe_file_name(&name), "Skin als PNG exportieren") {
+        if let Some(p) = Self::save_png_dialog(&Self::safe_file_name(&name), t("Skin als PNG exportieren")) {
             let mut s = self.editor.skin.clone();
             s.clean_unused(self.editor.model);
             self.write_file(ctx, &p, &s.to_png());
@@ -169,7 +204,7 @@ impl App {
     }
 
     fn export_mix(&mut self, ctx: &egui::Context) {
-        if let Some(p) = Self::save_png_dialog("partnerlook_skin.png", "Gemixten Skin exportieren") {
+        if let Some(p) = Self::save_png_dialog("partnerlook_skin.png", t("Gemixten Skin exportieren")) {
             let data = self.mixer.result.to_png();
             self.write_file(ctx, &p, &data);
         }
@@ -190,7 +225,7 @@ impl App {
         };
         let (w, h) = (900, 1200);
         let rgba = prev.render_image(skin, model, vis, w, h);
-        if let Some(p) = Self::save_png_dialog("skin_vorschau.png", "3D-Ansicht als Bild speichern") {
+        if let Some(p) = Self::save_png_dialog("skin_vorschau.png", t("3D-Ansicht als Bild speichern")) {
             let data = skin::encode_png(w as u32, h as u32, &rgba);
             self.write_file(ctx, &p, &data);
         }
@@ -202,21 +237,114 @@ impl App {
             match Self::read_skin(&p) {
                 Ok((s, m)) => {
                     self.editor.replace_skin(s, m);
-                    self.notify(ctx, format!("Importiert: {} (Strg+Z macht es rückgängig)", Self::file_name(&p)), false);
+                    self.notify(ctx, t1("Importiert: {0} (Strg+Z macht es rückgängig)", Self::file_name(&p)), false);
                 }
                 Err(e) => self.notify(ctx, e, true),
             }
         }
     }
 
-    // ------------------------------------------------------------------ Projekte
+    // ------------------------------------------------------------------ Tabs & Projekte
+
+    fn tab_index_of(&self, id: &str) -> Option<usize> {
+        if self.project.as_ref().is_some_and(|p| p.id == id) {
+            return Some(self.active);
+        }
+        self.tabs.iter().position(|t| t.as_ref().is_some_and(|(m, _)| m.id == id))
+    }
+
+    fn tab_meta(&self, i: usize) -> Option<&ProjectMeta> {
+        if i == self.active { self.project.as_ref() } else { self.tabs.get(i)?.as_ref().map(|(m, _)| m) }
+    }
+
+    fn tab_modified(&self, i: usize) -> bool {
+        if i == self.active {
+            self.project.is_some() && self.editor.modified
+        } else {
+            self.tabs.get(i).and_then(|t| t.as_ref()).is_some_and(|(_, e)| e.modified)
+        }
+    }
+
+    /// Skin eines offenen Projekts (aktiv oder im Hintergrund)
+    fn project_skin(&self, id: &str) -> Option<&Skin> {
+        if self.project.as_ref().is_some_and(|p| p.id == id) {
+            return Some(&self.editor.skin);
+        }
+        self.tabs.iter().flatten().find(|(m, _)| m.id == id).map(|(_, e)| &e.skin)
+    }
+
+    fn switch_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() || i == self.active || self.project.is_none() {
+            return;
+        }
+        let Some((meta, ed)) = self.tabs[i].take() else { return };
+        let old_meta = self.project.replace(meta).unwrap();
+        let old_editor = std::mem::replace(&mut self.editor, ed);
+        self.tabs[self.active] = Some((old_meta, old_editor));
+        self.active = i;
+        if let Some(p) = &self.project {
+            project::set_last(&p.id);
+        }
+    }
 
     fn open_project_with(&mut self, meta: ProjectMeta, skin: Skin) {
-        self.editor.open_fresh(skin, meta.model);
-        self.editor.preview.cam = Default::default();
+        if let Some(i) = self.tab_index_of(&meta.id) {
+            self.switch_tab(i);
+            self.screen = Screen::Editor;
+            return;
+        }
+        let mut ed = self.editor.fresh_from();
+        ed.open_fresh(skin, meta.model);
         project::set_last(&meta.id);
+        if let Some(old_meta) = self.project.take() {
+            let old_editor = std::mem::replace(&mut self.editor, ed);
+            self.tabs[self.active] = Some((old_meta, old_editor));
+            self.tabs.push(None);
+            self.active = self.tabs.len() - 1;
+        } else {
+            self.editor = ed;
+            self.tabs = vec![None];
+            self.active = 0;
+        }
         self.project = Some(meta);
         self.screen = Screen::Editor;
+    }
+
+    fn close_tab_now(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        if i == self.active {
+            self.tabs.remove(i);
+            if self.tabs.is_empty() {
+                self.project = None;
+                self.editor = self.editor.fresh_from();
+                self.active = 0;
+                if self.screen == Screen::Editor {
+                    self.screen = Screen::Start;
+                }
+                self.cards = None;
+            } else {
+                let next = i.min(self.tabs.len() - 1);
+                let (meta, ed) = self.tabs[next].take().unwrap();
+                self.project = Some(meta);
+                self.editor = ed;
+                self.active = next;
+            }
+        } else {
+            self.tabs.remove(i);
+            if i < self.active {
+                self.active -= 1;
+            }
+        }
+    }
+
+    fn request_close_tab(&mut self, i: usize) {
+        if self.tab_modified(i) {
+            self.pending = Some(Pending::CloseTab(i));
+        } else {
+            self.close_tab_now(i);
+        }
     }
 
     fn create_project(&mut self, name: String, skin: Skin, model: Model) -> Result<(), String> {
@@ -233,25 +361,36 @@ impl App {
     }
 
     fn open_project(&mut self, ctx: &egui::Context, id: &str) {
+        if let Some(i) = self.tab_index_of(id) {
+            self.switch_tab(i);
+            self.screen = Screen::Editor;
+            return;
+        }
         match project::load(id) {
             Some(p) => self.open_project_with(p.meta, p.skin),
             None => {
-                self.notify(ctx, "Projekt konnte nicht geladen werden.", true);
+                self.notify(ctx, t("Projekt konnte nicht geladen werden."), true);
                 self.cards = None;
             }
         }
     }
 
+    fn save_pair(meta: &mut ProjectMeta, editor: &mut Editor) -> Result<(), String> {
+        meta.model = editor.model;
+        meta.modified = project::now();
+        project::save(meta, &editor.skin)?;
+        editor.modified = false;
+        Ok(())
+    }
+
     fn save_project(&mut self, ctx: &egui::Context) -> bool {
         let Some(meta) = &mut self.project else { return true };
-        meta.model = self.editor.model;
-        meta.modified = project::now();
-        let meta = meta.clone();
-        match project::save(&meta, &self.editor.skin) {
+        match Self::save_pair(meta, &mut self.editor) {
             Ok(_) => {
-                self.editor.modified = false;
+                let name = meta.name.clone();
                 self.cards = None;
-                self.notify(ctx, format!("✔ „{}“ gespeichert", meta.name), false);
+                project::set_last(&meta.id);
+                self.notify(ctx, t1("✔ „{0}“ gespeichert", name), false);
                 true
             }
             Err(e) => {
@@ -261,18 +400,31 @@ impl App {
         }
     }
 
-    fn has_unsaved(&self) -> bool {
-        self.project.is_some() && self.editor.modified
+    /// Alle geänderten Tabs speichern.
+    fn save_all(&mut self, ctx: &egui::Context) -> bool {
+        let mut ok = true;
+        if self.project.is_some() && self.editor.modified {
+            ok &= self.save_project(ctx);
+        }
+        for (meta, ed) in self.tabs.iter_mut().flatten() {
+            if ed.modified {
+                if let Err(e) = Self::save_pair(meta, ed) {
+                    ok = false;
+                    self.toast = Some((e, ctx.input(|i| i.time) + 5.0, true));
+                }
+            }
+        }
+        self.cards = None;
+        ok
+    }
+
+    fn unsaved_count(&self) -> usize {
+        (0..self.tabs.len()).filter(|&i| self.tab_modified(i)).count()
     }
 
     fn go_home(&mut self) {
-        if self.has_unsaved() {
-            self.pending = Some(Pending::Home);
-        } else {
-            self.screen = Screen::Start;
-            self.project = None;
-            self.cards = None;
-        }
+        self.screen = Screen::Start;
+        self.cards = None;
     }
 
     fn load_cards(&mut self, ctx: &egui::Context) {
@@ -292,6 +444,7 @@ impl App {
                     height: 180,
                     supersample: 2,
                     ghosts: false,
+                    grid: false,
                 };
                 let out = render3d::render(&p.skin, &params);
                 let img = egui::ColorImage::from_rgba_premultiplied([out.width, out.height], &out.rgba);
@@ -317,11 +470,11 @@ impl App {
                         }
                         Screen::Editor => {
                             self.editor.replace_skin(s, m);
-                            self.notify(ctx, format!("Importiert: {}", Self::file_name(&path)), false);
+                            self.notify(ctx, t1("Importiert: {0}", Self::file_name(&path)), false);
                         }
                         Screen::Mixer => match self.mixer.set_slot(None, s, m, Self::file_stem(&path)) {
-                            Some(l) => self.notify(ctx, format!("Als Skin {l} geladen"), false),
-                            None => self.notify(ctx, "Es passen höchstens 26 Skins in den Mixer.", true),
+                            Some(l) => self.notify(ctx, t1("Als Skin {0} geladen", l), false),
+                            None => self.notify(ctx, t("Es passen höchstens 26 Skins in den Mixer."), true),
                         },
                     }
                 }
@@ -331,7 +484,12 @@ impl App {
     }
 
     fn modal_open(&self) -> bool {
-        self.new_dialog.is_some() || self.rename.is_some() || self.delete_confirm.is_some() || self.pending.is_some()
+        self.new_dialog.is_some()
+            || self.rename.is_some()
+            || self.delete_confirm.is_some()
+            || self.pending.is_some()
+            || self.update_confirm
+            || self.restart_prompt
     }
 
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
@@ -339,11 +497,13 @@ impl App {
             return;
         }
         let sc = |m, k| egui::KeyboardShortcut::new(m, k);
-        let (open, save, export) = ctx.input_mut(|i| {
+        let (open, save, export, new_tab, close_tab) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&sc(Modifiers::COMMAND, Key::O)),
                 i.consume_shortcut(&sc(Modifiers::COMMAND, Key::S)),
                 i.consume_shortcut(&sc(Modifiers::COMMAND, Key::E)),
+                i.consume_shortcut(&sc(Modifiers::COMMAND, Key::T)),
+                i.consume_shortcut(&sc(Modifiers::COMMAND, Key::W)),
             )
         });
         if open && self.screen == Screen::Editor {
@@ -354,6 +514,12 @@ impl App {
         }
         if export {
             self.action_export(ctx);
+        }
+        if new_tab {
+            self.go_home();
+        }
+        if close_tab && self.project.is_some() {
+            self.request_close_tab(self.active);
         }
         if ctx.input(|i| i.key_pressed(Key::F1)) {
             self.show_help = !self.show_help;
@@ -369,6 +535,66 @@ impl App {
             .id()
     }
 
+    fn set_language(&mut self, l: Lang) {
+        i18n::set_lang(l);
+        let mut s = project::load_settings();
+        s.lang = Some(l);
+        project::save_settings(&s);
+        self.cards = None;
+    }
+
+    // ------------------------------------------------------------------ Update-Knopf
+
+    fn update_button(&mut self, ui: &mut egui::Ui) {
+        let state = self.updater.state();
+        let (col, tip) = match &state {
+            UpdateState::Available(v) => (Color32::from_rgb(80, 210, 110), t1("Update auf Version {0} verfügbar – klicken zum Installieren", v)),
+            UpdateState::Checking => (Color32::from_gray(150), t("Suche nach Updates …").to_string()),
+            UpdateState::Downloading(v) => (ORANGE, t1("Version {0} wird heruntergeladen …", v)),
+            UpdateState::Ready(v) => (Color32::from_rgb(80, 210, 110), t1("Version {0} ist installiert – klicken zum Neustarten", v)),
+            UpdateState::UpToDate => (Color32::from_gray(120), t1("Du hast die neueste Version ({0})", updater::VERSION)),
+            UpdateState::Failed(e) => (Color32::from_gray(100), t2("Keine Update-Info ({0}). Version {1} – klicken zum erneuten Prüfen", e, updater::VERSION)),
+            UpdateState::Idle => (Color32::from_gray(120), t1("Version {0}", updater::VERSION)),
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+        }
+        updater::paint_icon(ui.painter(), rect, col);
+        if matches!(state, UpdateState::Available(_) | UpdateState::Ready(_)) {
+            ui.painter().circle_filled(rect.right_top() + egui::vec2(-4.0, 4.0), 3.5, Color32::from_rgb(80, 210, 110));
+        }
+        if matches!(state, UpdateState::Checking | UpdateState::Downloading(_)) {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+        }
+        let resp = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            match state {
+                UpdateState::Available(_) => self.update_confirm = true,
+                UpdateState::Ready(_) => self.restart_for_update(ui.ctx()),
+                UpdateState::Checking | UpdateState::Downloading(_) => {}
+                _ => self.updater.check(ui.ctx()),
+            }
+        }
+    }
+
+    fn restart_for_update(&mut self, ctx: &egui::Context) {
+        if self.unsaved_count() > 0 {
+            self.pending = Some(Pending::Restart);
+        } else {
+            self.do_restart(ctx);
+        }
+    }
+
+    fn do_restart(&mut self, ctx: &egui::Context) {
+        if updater::restart().is_some() {
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            self.notify(ctx, t("Neustart fehlgeschlagen – bitte Skin Studio selbst neu öffnen."), true);
+        }
+    }
+
     // ------------------------------------------------------------------ Startseite
 
     fn start_screen(&mut self, ui: &mut egui::Ui) {
@@ -382,13 +608,20 @@ impl App {
                 ui.add_space(margin);
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    ui.add_space(28.0);
+                    ui.add_space(24.0);
                     ui.horizontal(|ui| {
                         ui.add(egui::Image::new((logo, egui::vec2(56.0, 56.0))));
                         ui.vertical(|ui| {
                             ui.add_space(4.0);
-                            ui.label(RichText::new("Skin Studio").size(30.0).strong().color(Color32::WHITE));
-                            ui.label(RichText::new("Was möchtest du heute erstellen?").size(15.0).weak());
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Skin Studio").size(30.0).strong().color(Color32::WHITE));
+                                ui.add_space(4.0);
+                                self.update_button(ui);
+                            });
+                            ui.label(RichText::new(t("Was möchtest du heute erstellen?")).size(15.0).weak());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.language_menu(ui);
                         });
                     });
                     ui.add_space(22.0);
@@ -401,7 +634,7 @@ impl App {
                     if let Some(card) = last {
                         let (id, name, time, tex) =
                             (card.meta.id.clone(), card.meta.name.clone(), card.meta.modified, card.thumb.id());
-                        section(ui, "WEITERMACHEN");
+                        section(ui, t("WEITERMACHEN"));
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 120.0), Sense::click());
                         let hovered = resp.hovered();
                         let p = ui.painter();
@@ -413,13 +646,13 @@ impl App {
                         p.text(
                             rect.min + egui::vec2(120.0, 64.0),
                             egui::Align2::LEFT_CENTER,
-                            format!("Minecraft Skin · zuletzt gespeichert {}", project::format_time(time)),
+                            t1("Minecraft Skin · zuletzt gespeichert {0}", project::format_time(time)),
                             egui::FontId::proportional(14.0),
                             Color32::from_gray(170),
                         );
                         let btn = Rect::from_min_size(rect.right_center() - egui::vec2(200.0, 20.0), egui::vec2(180.0, 40.0));
                         p.rect_filled(btn, 8.0, if hovered { ORANGE } else { ORANGE.gamma_multiply(0.85) });
-                        p.text(btn.center(), egui::Align2::CENTER_CENTER, "▶  Weiter bearbeiten", egui::FontId::proportional(16.0), Color32::WHITE);
+                        p.text(btn.center(), egui::Align2::CENTER_CENTER, t("▶  Weiter bearbeiten"), egui::FontId::proportional(16.0), Color32::WHITE);
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             self.open_project(&ctx, &id);
                         }
@@ -427,31 +660,30 @@ impl App {
                     }
 
                     // Neues Projekt
-                    section(ui, "NEUES PROJEKT");
+                    section(ui, t("NEUES PROJEKT"));
                     let cw = (width - 2.0 * 14.0) / 3.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 14.0;
-                        if big_card(ui, cw, "🎨", "Minecraft Skin Editor", "Skins Pixel für Pixel gestalten – mit 3D-Ansicht, Rauschpinsel und mehr.", true).clicked() {
+                        if big_card(ui, cw, "🎨", t("Minecraft Skin Editor"), t("Skins Pixel für Pixel gestalten – mit 3D-Ansicht, Rauschpinsel und mehr."), true).clicked() {
                             let existing = project::list();
                             self.new_dialog =
                                 Some(NewDialog { name: project::next_name(&existing), start: StartWith::Figure, model: Model::Classic });
                         }
-                        if big_card(ui, cw, "👫", "Skin-Mixer", "Zwei Skins kombinieren – z. B. dein Kopf mit einem anderen Outfit für den Partnerlook.", true).clicked() {
-                            self.project = None;
+                        if big_card(ui, cw, "👫", t("Skin-Mixer"), t("Skins kombinieren – z. B. dein Kopf mit einem anderen Outfit für den Partnerlook."), true).clicked() {
                             self.screen = Screen::Mixer;
                         }
-                        big_card(ui, cw, "✨", "Bald mehr …", "Weitere Editoren kommen in zukünftigen Versionen.", false);
+                        big_card(ui, cw, "✨", t("Bald mehr …"), t("Weitere Editoren kommen in zukünftigen Versionen."), false);
                     });
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("📂  PNG-Skin importieren …").on_hover_text("Erstellt aus einer Skin-Datei ein neues Projekt").clicked() {
+                        if ui.button(t("📂  PNG-Skin importieren …")).on_hover_text(t("Erstellt aus einer Skin-Datei ein neues Projekt")).clicked() {
                             if let Some(p) = Self::pick_png() {
                                 if let Err(e) = self.project_from_file(&p) {
                                     self.notify(&ctx, e, true);
                                 }
                             }
                         }
-                        ui.label(RichText::new("oder PNG-Datei einfach ins Fenster ziehen").small().weak());
+                        ui.label(RichText::new(t("oder PNG-Datei einfach ins Fenster ziehen")).small().weak());
                     });
 
                     // Meine Projekte
@@ -461,9 +693,9 @@ impl App {
                         .as_ref()
                         .map(|c| c.iter().map(|p| (p.meta.id.clone(), p.meta.name.clone(), p.meta.modified, p.thumb.id())).collect())
                         .unwrap_or_default();
-                    section(ui, &format!("MEINE PROJEKTE ({})", cards.len()));
+                    section(ui, &t1("MEINE PROJEKTE ({0})", cards.len()));
                     if cards.is_empty() {
-                        ui.label(RichText::new("Noch keine Projekte – starte oben ein neues!").weak());
+                        ui.label(RichText::new(t("Noch keine Projekte – starte oben ein neues!")).weak());
                     }
                     let tile = egui::vec2(160.0, 232.0);
                     let per_row = ((width + 12.0) / (tile.x + 12.0)).floor().max(1.0) as usize;
@@ -473,21 +705,23 @@ impl App {
                             for (id, name, time, tex) in row {
                                 let (rect, resp) = ui.allocate_exact_size(tile, Sense::click());
                                 let hovered = resp.hovered();
+                                let open = self.tab_index_of(id).is_some();
                                 let p = ui.painter();
                                 p.rect_filled(rect, 10.0, if hovered { Color32::from_rgb(52, 58, 70) } else { Color32::from_rgb(42, 46, 55) });
-                                p.rect_stroke(rect, 10.0, Stroke::new(1.0, if hovered { ORANGE } else { Color32::from_gray(64) }), StrokeKind::Inside);
+                                p.rect_stroke(rect, 10.0, Stroke::new(1.0, if hovered || open { ORANGE } else { Color32::from_gray(64) }), StrokeKind::Inside);
                                 let img = Rect::from_min_size(rect.min + egui::vec2(5.0, 6.0), egui::vec2(150.0, 180.0));
                                 p.image(*tex, img, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                                 let title = elide(name, 18);
                                 p.text(rect.left_bottom() + egui::vec2(10.0, -36.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(14.0), Color32::WHITE);
-                                p.text(rect.left_bottom() + egui::vec2(10.0, -16.0), egui::Align2::LEFT_CENTER, project::format_time(*time), egui::FontId::proportional(12.0), Color32::from_gray(150));
+                                let sub = if open { t("● geöffnet").to_string() } else { project::format_time(*time) };
+                                p.text(rect.left_bottom() + egui::vec2(10.0, -16.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), if open { ORANGE } else { Color32::from_gray(150) });
                                 // kleine Knöpfe zum Umbenennen / Löschen
                                 let mut consumed = false;
                                 if hovered || ui.rect_contains_pointer(rect) {
                                     let b1 = Rect::from_min_size(rect.right_top() + egui::vec2(-62.0, 6.0), egui::vec2(26.0, 24.0));
                                     let b2 = Rect::from_min_size(rect.right_top() + egui::vec2(-32.0, 6.0), egui::vec2(26.0, 24.0));
-                                    let r1 = ui.put(b1, egui::Button::new("✏").small()).on_hover_text("Umbenennen");
-                                    let r2 = ui.put(b2, egui::Button::new("🗑").small()).on_hover_text("Löschen");
+                                    let r1 = ui.put(b1, egui::Button::new("✏").small()).on_hover_text(t("Umbenennen"));
+                                    let r2 = ui.put(b2, egui::Button::new("🗑").small()).on_hover_text(t("Löschen"));
                                     if r1.clicked() {
                                         self.rename = Some((id.clone(), name.clone()));
                                         consumed = true;
@@ -511,7 +745,75 @@ impl App {
         });
     }
 
+    fn language_menu(&mut self, ui: &mut egui::Ui) {
+        let cur = i18n::lang();
+        ui.menu_button(format!("🌐 {}", cur.label()), |ui| {
+            for l in [Lang::En, Lang::De] {
+                if ui.selectable_label(cur == l, l.label()).clicked() {
+                    self.set_language(l);
+                    ui.close();
+                }
+            }
+        });
+    }
+
     // ------------------------------------------------------------------ Leisten
+
+    fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        let mut switch = None;
+        let mut close = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for i in 0..self.tabs.len() {
+                let Some(meta) = self.tab_meta(i) else { continue };
+                let name = elide(&meta.name, 22);
+                let modified = self.tab_modified(i);
+                let active = i == self.active && self.screen == Screen::Editor;
+                let fill = if active { Color32::from_rgb(52, 56, 66) } else { Color32::from_rgb(38, 41, 48) };
+                let frame = egui::Frame::NONE
+                    .fill(fill)
+                    .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 })
+                    .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 });
+                let r = frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let (icon, icon_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::click());
+                        let logo = self.logo.as_ref().map(|l| l.id());
+                        if let Some(l) = logo {
+                            ui.painter().image(l, icon, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                        }
+                        let text = RichText::new(format!("{name}{}", if modified { " •" } else { "" }))
+                            .color(if active { Color32::WHITE } else { Color32::from_gray(170) });
+                        let label = ui.add(egui::Label::new(text).sense(Sense::click()).selectable(false));
+                        if (label.clicked() || icon_resp.clicked()) && close.is_none() {
+                            switch = Some(i);
+                        }
+                        label.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if ui.add(egui::Button::new(RichText::new("✖").size(10.0)).frame(false)).on_hover_text(t("Tab schließen (Strg+W)")).clicked() {
+                            close = Some(i);
+                        }
+                    });
+                });
+                if active {
+                    let rr = r.response.rect;
+                    ui.painter().line_segment([rr.left_bottom(), rr.right_bottom()], Stroke::new(2.0, ORANGE));
+                }
+            }
+            if ui
+                .add(egui::Button::new(RichText::new("➕").size(13.0)).frame(false).min_size(egui::vec2(26.0, 24.0)))
+                .on_hover_text(t("Neues oder anderes Projekt öffnen (Strg+T)"))
+                .clicked()
+            {
+                self.go_home();
+            }
+        });
+        if let Some(i) = close {
+            self.request_close_tab(i);
+        } else if let Some(i) = switch {
+            self.switch_tab(i);
+            self.screen = Screen::Editor;
+        }
+    }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -519,130 +821,145 @@ impl App {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.add(egui::Image::new((logo, egui::vec2(20.0, 20.0))));
             ui.label(RichText::new("Skin Studio").strong().color(Color32::WHITE));
-            ui.add_space(4.0);
-            if ui.button("🏠").on_hover_text("Zur Startseite").clicked() {
+            self.update_button(ui);
+            ui.add_space(2.0);
+            if ui.button("🏠").on_hover_text(t("Zur Startseite")).clicked() {
                 self.go_home();
             }
-            ui.menu_button("Datei", |ui| {
-                if ui.button("🏠 Zur Startseite").clicked() {
+            ui.menu_button(t("Datei"), |ui| {
+                if ui.button(t("🏠 Zur Startseite")).clicked() {
                     self.go_home();
                 }
                 ui.separator();
-                if ui.add_enabled(self.project.is_some(), egui::Button::new("💾 Projekt speichern  (Strg+S)")).clicked() {
+                if ui.add_enabled(self.project.is_some(), egui::Button::new(t("💾 Projekt speichern  (Strg+S)"))).clicked() {
                     self.save_project(&ctx);
                 }
-                if ui.add_enabled(self.project.is_some(), egui::Button::new("✏ Projekt umbenennen …")).clicked() {
+                if ui.add_enabled(self.project.is_some(), egui::Button::new(t("✏ Projekt umbenennen …"))).clicked() {
                     if let Some(p) = &self.project {
                         self.rename = Some((p.id.clone(), p.name.clone()));
                     }
                 }
-                if ui.add_enabled(self.project.is_some(), egui::Button::new("📂 PNG in Projekt importieren …  (Strg+O)")).clicked() {
+                if ui.add_enabled(self.project.is_some(), egui::Button::new(t("📂 PNG in Projekt importieren …  (Strg+O)"))).clicked() {
                     self.import_into_project(&ctx);
                 }
+                if ui.add_enabled(self.project.is_some(), egui::Button::new(t("✖ Tab schließen  (Strg+W)"))).clicked() {
+                    self.request_close_tab(self.active);
+                }
                 ui.separator();
-                if ui.button("⬇ Als PNG exportieren …  (Strg+E)").clicked() {
+                if ui.button(t("⬇ Als PNG exportieren …  (Strg+E)")).clicked() {
                     self.action_export(&ctx);
                 }
-                if ui.button("📷 3D-Ansicht als Bild …").clicked() {
+                if ui.button(t("📷 3D-Ansicht als Bild …")).clicked() {
                     self.export_render(&ctx);
                 }
                 ui.separator();
-                if ui.button("Beenden").clicked() {
+                if ui.button(t("Beenden")).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
             if self.screen == Screen::Editor {
-                ui.menu_button("Bearbeiten", |ui| {
+                ui.menu_button(t("Bearbeiten"), |ui| {
                     let e = &mut self.editor;
-                    if ui.add_enabled(e.can_undo(), egui::Button::new("Rückgängig  (Strg+Z)")).clicked() {
+                    if ui.add_enabled(e.can_undo(), egui::Button::new(t("Rückgängig  (Strg+Z)"))).clicked() {
                         e.undo();
                     }
-                    if ui.add_enabled(e.can_redo(), egui::Button::new("Wiederholen  (Strg+Y)")).clicked() {
+                    if ui.add_enabled(e.can_redo(), egui::Button::new(t("Wiederholen  (Strg+Y)"))).clicked() {
                         e.redo();
                     }
                     ui.separator();
-                    if ui.button("🎨 Farben anpassen …").clicked() {
+                    if ui.button(t("🎨 Farben anpassen …")).clicked() {
                         e.start_adjust();
                     }
-                    if ui.button("↔ Links und rechts spiegeln").clicked() {
+                    if ui.button(t("↔ Links und rechts spiegeln")).clicked() {
                         e.mirror_all();
                     }
-                    if ui.button("Graustufen").clicked() {
+                    if ui.button(t("Graustufen")).clicked() {
                         e.grayscale();
                     }
                     ui.separator();
-                    if ui.button("2. Ebene auf 1. Ebene zusammenführen").clicked() {
+                    if ui.button(t("2. Ebene auf 1. Ebene zusammenführen")).clicked() {
                         e.merge_overlay();
                     }
-                    if ui.button("1. Ebene in 2. Ebene kopieren").clicked() {
+                    if ui.button(t("1. Ebene in 2. Ebene kopieren")).clicked() {
                         e.copy_base_to_overlay();
                     }
-                    if ui.button("2. Ebene leeren").clicked() {
+                    if ui.button(t("2. Ebene leeren")).clicked() {
                         e.clear_layer(Layer::Overlay);
                     }
-                    if ui.button("1. Ebene leeren").clicked() {
+                    if ui.button(t("1. Ebene leeren")).clicked() {
                         e.clear_layer(Layer::Base);
                     }
                     ui.separator();
                     let target = if e.model == Model::Classic { Model::Slim } else { Model::Classic };
                     let label =
-                        if target == Model::Slim { "Arme zu Slim (3 px) umrechnen" } else { "Arme zu Classic (4 px) umrechnen" };
+                        if target == Model::Slim { t("Arme zu Slim (3 px) umrechnen") } else { t("Arme zu Classic (4 px) umrechnen") };
                     if ui.button(label).clicked() {
                         e.convert_arms(target);
                     }
                 });
-                ui.menu_button("Ansicht", |ui| {
-                    ui.checkbox(&mut self.editor.show_2d, "2D-Textur anzeigen");
-                    ui.checkbox(&mut self.editor.show_grid, "Pixelraster (2D)");
-                    ui.checkbox(&mut self.editor.show_regions, "Körperteil-Bereiche (2D)");
-                    ui.checkbox(&mut self.editor.preview.antialias, "3D-Kantenglättung");
+                ui.menu_button(t("Ansicht"), |ui| {
+                    ui.checkbox(&mut self.editor.show_2d, t("2D-Textur anzeigen"));
+                    ui.checkbox(&mut self.editor.show_grid, t("Pixelraster (2D)"));
+                    ui.checkbox(&mut self.editor.show_regions, t("Körperteil-Bereiche (2D)"));
+                    ui.checkbox(&mut self.editor.preview.grid, t("Pixelraster (3D)"));
                 });
             }
-            ui.menu_button("Hilfe", |ui| {
-                if ui.button("⌨ Tastenkürzel  (F1)").clicked() {
+            ui.menu_button(t("Hilfe"), |ui| {
+                if ui.button(t("⌨ Tastenkürzel  (F1)")).clicked() {
                     self.show_help = true;
                 }
+                ui.separator();
+                ui.label(RichText::new(t("Sprache / Language")).small().weak());
+                let cur = i18n::lang();
+                for l in [Lang::En, Lang::De] {
+                    if ui.selectable_label(cur == l, l.label()).clicked() {
+                        self.set_language(l);
+                    }
+                }
+                ui.separator();
+                if ui.button(t("🔄 Nach Updates suchen")).clicked() {
+                    self.updater.check(&ctx);
+                }
+                ui.label(RichText::new(t1("Version {0}", updater::VERSION)).small().weak());
             });
 
             ui.add_space(14.0);
             let has_project = self.project.is_some();
             if ui
-                .add_enabled(has_project, egui::Button::selectable(self.screen == Screen::Editor, RichText::new("🎨  Editor").size(14.0)))
-                .on_disabled_hover_text("Erst ein Projekt öffnen oder erstellen")
+                .add_enabled(has_project, egui::Button::selectable(self.screen == Screen::Editor, RichText::new(t("🎨  Editor")).size(14.0)))
+                .on_disabled_hover_text(t("Erst ein Projekt öffnen oder erstellen"))
                 .clicked()
             {
                 self.screen = Screen::Editor;
             }
-            if ui.add(egui::Button::selectable(self.screen == Screen::Mixer, RichText::new("👫  Skin-Mixer").size(14.0))).clicked() {
+            if ui.add(egui::Button::selectable(self.screen == Screen::Mixer, RichText::new(t("👫  Skin-Mixer")).size(14.0))).clicked() {
                 self.screen = Screen::Mixer;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn = egui::Button::new(RichText::new("⬇  Exportieren").strong().color(Color32::WHITE))
+                let btn = egui::Button::new(RichText::new(t("⬇  Exportieren")).strong().color(Color32::WHITE))
                     .fill(ui.visuals().selection.bg_fill)
                     .min_size(egui::vec2(124.0, 26.0));
-                if ui.add(btn).on_hover_text("Skin als PNG-Datei speichern, z. B. für Minecraft (Strg+E)").clicked() {
+                if ui.add(btn).on_hover_text(t("Skin als PNG-Datei speichern, z. B. für Minecraft (Strg+E)")).clicked() {
                     self.action_export(&ctx);
                 }
-                if let Some(p) = &self.project {
-                    let label = if self.editor.modified { "💾  Speichern •" } else { "💾  Gespeichert" };
-                    let name = p.name.clone();
+                if self.project.is_some() {
+                    let label = if self.editor.modified { t("💾  Speichern •") } else { t("💾  Gespeichert") };
                     if ui
                         .add_enabled(self.editor.modified, egui::Button::new(label).min_size(egui::vec2(120.0, 26.0)))
-                        .on_hover_text("Projekt im Programm speichern (Strg+S)")
+                        .on_hover_text(t("Projekt im Programm speichern (Strg+S)"))
                         .clicked()
                     {
                         self.save_project(&ctx);
                     }
                     if self.screen == Screen::Editor
                         && ui
-                            .add(egui::Button::new("📂  Importieren").min_size(egui::vec2(110.0, 26.0)))
-                            .on_hover_text("Einen PNG-Skin in dieses Projekt laden (Strg+O) – Strg+Z macht es rückgängig")
+                            .add(egui::Button::new(t("📂  Importieren")).min_size(egui::vec2(110.0, 26.0)))
+                            .on_hover_text(t("Einen PNG-Skin in dieses Projekt laden (Strg+O) – Strg+Z macht es rückgängig"))
                             .clicked()
                     {
                         self.import_into_project(&ctx);
                     }
-                    ui.label(RichText::new(elide(&name, 28)).strong());
                 }
             });
         });
@@ -659,44 +976,45 @@ impl App {
                     ui.label(e.model.name());
                     if e.mirror {
                         ui.separator();
-                        ui.label(RichText::new("↔ Spiegeln an").color(ORANGE));
+                        ui.label(RichText::new(t("↔ Spiegeln an")).color(ORANGE));
                     }
                     ui.separator();
-                    ui.label(RichText::new("Alt+Klick: Pipette · Strg+Z: zurück · F1: alle Tastenkürzel").weak());
+                    ui.label(RichText::new(t("Alt+Klick: Pipette · Strg+Z: zurück · F1: alle Tastenkürzel")).weak());
                 });
             }
             Screen::Mixer => {
-                ui.label("Skin-Mixer – kombiniere zwei Skins zu einem neuen.");
+                ui.label(t("Skin-Mixer – kombiniere Skins zu einem neuen."));
             }
             Screen::Start => {
-                ui.label(RichText::new("Deine Projekte werden im Programm gespeichert – du musst keine Dateien verwalten.").weak());
+                ui.label(RichText::new(t("Deine Projekte werden im Programm gespeichert – du musst keine Dateien verwalten.")).weak());
             }
         });
     }
 
     fn help_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_help;
-        egui::Window::new("⌨ Tastenkürzel").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(t("⌨ Tastenkürzel")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             egui::Grid::new("keys").num_columns(2).striped(true).show(ui, |ui| {
                 let rows = [
-                    ("B", "Stift"),
-                    ("E", "Radierer"),
-                    ("N", "Rauschpinsel"),
-                    ("H", "Licht/Schatten"),
-                    ("G / F", "Füllen"),
-                    ("R", "Farbe ersetzen"),
-                    ("L", "Linie (2D)"),
-                    ("U", "Rechteck (2D)"),
-                    ("I", "Pipette (oder Alt + Klick)"),
-                    ("M", "Spiegeln an/aus"),
-                    ("X", "Haupt- und Zweitfarbe tauschen"),
-                    ("[  ]  /  − +", "Pinselgröße"),
-                    ("Strg+Z / Strg+Y", "Rückgängig / Wiederholen"),
-                    ("Strg+S", "Projekt speichern"),
-                    ("Strg+O", "PNG ins Projekt importieren"),
-                    ("Strg+E", "Als PNG exportieren"),
-                    ("Rechte Maustaste ziehen", "3D-Modell drehen"),
-                    ("Mausrad", "Zoomen"),
+                    ("B", t("Stift")),
+                    ("E", t("Radierer")),
+                    ("N", t("Rauschpinsel")),
+                    ("H", t("Licht/Schatten")),
+                    ("G / F", t("Füllen")),
+                    ("R", t("Farbe ersetzen")),
+                    ("L", t("Linie (2D)")),
+                    ("U", t("Rechteck (2D)")),
+                    ("I", t("Pipette (oder Alt + Klick)")),
+                    ("M", t("Spiegeln an/aus")),
+                    ("X", t("Haupt- und Zweitfarbe tauschen")),
+                    ("[  ]  /  − +", t("Pinselgröße")),
+                    (t("Strg+Z / Strg+Y"), t("Rückgängig / Wiederholen")),
+                    (t("Strg+S"), t("Projekt speichern")),
+                    (t("Strg+O"), t("PNG ins Projekt importieren")),
+                    (t("Strg+E"), t("Als PNG exportieren")),
+                    (t("Strg+T / Strg+W"), t("Neuer Tab / Tab schließen")),
+                    (t("Rechte Maustaste ziehen"), t("3D-Modell drehen")),
+                    (t("Mausrad"), t("Zoomen")),
                 ];
                 for (k, v) in rows {
                     ui.monospace(k);
@@ -715,36 +1033,36 @@ impl App {
         if let Some(mut d) = self.new_dialog.take() {
             let mut result: Option<bool> = None;
             let modal = egui::Modal::new(egui::Id::unique("new_project")).show(ctx, |ui| {
-                ui.set_width(380.0);
-                ui.heading("🎨 Neues Skin-Projekt");
+                ui.set_width(400.0);
+                ui.heading(t("🎨 Neues Skin-Projekt"));
                 ui.add_space(8.0);
-                ui.label("Name");
+                ui.label(t("Name"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     result = Some(true);
                 }
                 ui.add_space(8.0);
-                ui.label("Starten mit");
+                ui.label(t("Starten mit"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.start, StartWith::Figure, "👤 Start-Figur");
-                    ui.selectable_value(&mut d.start, StartWith::Blank, "⬜ Leer");
-                    ui.selectable_value(&mut d.start, StartWith::File, "📂 PNG-Datei …");
+                    ui.selectable_value(&mut d.start, StartWith::Figure, t("👤 Start-Figur"));
+                    ui.selectable_value(&mut d.start, StartWith::Blank, t("⬜ Leer"));
+                    ui.selectable_value(&mut d.start, StartWith::File, t("📂 PNG-Datei …"));
                 });
                 if d.start != StartWith::File {
                     ui.add_space(6.0);
-                    ui.label("Modell");
+                    ui.label(t("Modell"));
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut d.model, Model::Classic, "Classic (4 px Arme)");
-                        ui.selectable_value(&mut d.model, Model::Slim, "Slim (3 px Arme)");
+                        ui.selectable_value(&mut d.model, Model::Classic, t("Classic (4 px Arme)"));
+                        ui.selectable_value(&mut d.model, Model::Slim, t("Slim (3 px Arme)"));
                     });
                 }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let create = egui::Button::new(RichText::new("Erstellen").strong().color(Color32::WHITE)).fill(ORANGE);
+                    let create = egui::Button::new(RichText::new(t("Erstellen")).strong().color(Color32::WHITE)).fill(ORANGE);
                     if ui.add(create).clicked() {
                         result = Some(true);
                     }
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.button(t("Abbrechen")).clicked() {
                         result = Some(false);
                     }
                 });
@@ -754,7 +1072,7 @@ impl App {
             }
             match result {
                 Some(true) => {
-                    let name = if d.name.trim().is_empty() { "Mein Skin".to_string() } else { d.name.trim().to_string() };
+                    let name = if d.name.trim().is_empty() { t("Mein Skin").to_string() } else { d.name.trim().to_string() };
                     let res = match d.start {
                         StartWith::Figure => {
                             let s = skin::starter_skin();
@@ -781,7 +1099,7 @@ impl App {
             let mut result: Option<bool> = None;
             let modal = egui::Modal::new(egui::Id::unique("rename")).show(ctx, |ui| {
                 ui.set_width(340.0);
-                ui.heading("Projekt umbenennen");
+                ui.heading(t("Projekt umbenennen"));
                 ui.add_space(6.0);
                 let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
                 r.request_focus();
@@ -790,10 +1108,10 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("✔ Übernehmen").clicked() {
+                    if ui.button(t("✔ Übernehmen")).clicked() {
                         result = Some(true);
                     }
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.button(t("Abbrechen")).clicked() {
                         result = Some(false);
                     }
                 });
@@ -804,15 +1122,20 @@ impl App {
             match result {
                 Some(true) if !name.trim().is_empty() => {
                     let name = name.trim().to_string();
+                    // offene Tabs aktualisieren
                     if let Some(p) = self.project.as_mut().filter(|p| p.id == id) {
-                        p.name = name;
-                        // nur die Projektinfo aktualisieren, den Skin-Stand nicht ungefragt speichern
-                        if let Some(stored) = project::load(&id) {
-                            let mut meta = stored.meta;
-                            meta.name = p.name.clone();
-                            let _ = project::save(&meta, &stored.skin);
+                        p.name = name.clone();
+                    }
+                    for (m, _) in self.tabs.iter_mut().flatten() {
+                        if m.id == id {
+                            m.name = name.clone();
                         }
-                    } else if let Some(stored) = project::load(&id) {
+                    }
+                    if let Some(link) = self.mixer.link.as_mut().filter(|l| l.project_id == id) {
+                        link.name = name.clone();
+                    }
+                    // nur die Projektinfo speichern, den Skin-Stand nicht ungefragt
+                    if let Some(stored) = project::load(&id) {
                         let mut meta = stored.meta;
                         meta.name = name;
                         let _ = project::save(&meta, &stored.skin);
@@ -829,15 +1152,15 @@ impl App {
             let mut result: Option<bool> = None;
             let modal = egui::Modal::new(egui::Id::unique("delete")).show(ctx, |ui| {
                 ui.set_width(340.0);
-                ui.heading("Projekt löschen?");
-                ui.label(format!("„{name}“ wird endgültig gelöscht."));
+                ui.heading(t("Projekt löschen?"));
+                ui.label(t1("„{0}“ wird endgültig gelöscht.", &name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let del = egui::Button::new(RichText::new("🗑 Löschen").color(Color32::WHITE)).fill(Color32::from_rgb(170, 50, 55));
+                    let del = egui::Button::new(RichText::new(t("🗑 Löschen")).color(Color32::WHITE)).fill(Color32::from_rgb(170, 50, 55));
                     if ui.add(del).clicked() {
                         result = Some(true);
                     }
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.button(t("Abbrechen")).clicked() {
                         result = Some(false);
                     }
                 });
@@ -847,45 +1170,143 @@ impl App {
             }
             match result {
                 Some(true) => {
+                    if let Some(i) = self.tab_index_of(&id) {
+                        self.close_tab_now(i);
+                    }
+                    if self.mixer.link.as_ref().is_some_and(|l| l.project_id == id) {
+                        self.mixer.unlink();
+                    }
                     project::delete(&id);
                     self.cards = None;
-                    self.notify(ctx, format!("„{name}“ gelöscht"), false);
+                    self.notify(ctx, t1("„{0}“ gelöscht", name), false);
                 }
                 Some(false) => {}
                 None => self.delete_confirm = Some((id, name)),
             }
         }
 
-        // Speichern?
-        if let Some(pending) = self.pending {
-            let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_default();
-            let modal = egui::Modal::new(egui::Id::unique("save_prompt")).show(ctx, |ui| {
-                ui.set_width(380.0);
-                ui.heading("💾 Projekt speichern?");
-                ui.add_space(4.0);
-                ui.label(format!("Möchtest du deine Änderungen an „{name}“ speichern?"));
-                ui.label(RichText::new("Das Projekt bleibt im Programm – beim nächsten Start kannst du direkt weitermachen.").small().weak());
+        // Update installieren?
+        if self.update_confirm {
+            let version = match self.updater.state() {
+                UpdateState::Available(v) => v,
+                _ => {
+                    self.update_confirm = false;
+                    String::new()
+                }
+            };
+            if self.update_confirm {
+                let modal = egui::Modal::new(egui::Id::unique("update_confirm")).show(ctx, |ui| {
+                    ui.set_width(380.0);
+                    ui.heading(t("🔄 Update verfügbar"));
+                    ui.label(t2("Version {0} ist verfügbar (du hast {1}).", &version, updater::VERSION));
+                    ui.label(RichText::new(t("Das Update wird heruntergeladen und installiert. Deine Projekte bleiben erhalten.")).small().weak());
+                    ui.add_space(10.0);
+                    let mut r = 0;
+                    ui.horizontal(|ui| {
+                        let b = egui::Button::new(RichText::new(t("Jetzt installieren")).strong().color(Color32::WHITE)).fill(ORANGE);
+                        if ui.add(b).clicked() {
+                            r = 1;
+                        }
+                        if ui.button(t("Später")).clicked() {
+                            r = 2;
+                        }
+                    });
+                    r
+                });
+                if modal.inner == 1 {
+                    self.updater.install(ctx);
+                    self.update_confirm = false;
+                } else if modal.inner == 2 || modal.should_close() {
+                    self.update_confirm = false;
+                }
+            }
+        }
+
+        // Update fertig → neu starten?
+        if !self.restart_prompted && matches!(self.updater.state(), UpdateState::Ready(_)) {
+            self.restart_prompted = true;
+            self.restart_prompt = true;
+        }
+        if self.restart_prompt {
+            let modal = egui::Modal::new(egui::Id::unique("restart_prompt")).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(t("✔ Update installiert"));
+                ui.label(t("Starte Skin Studio neu, um die neue Version zu benutzen."));
                 ui.add_space(10.0);
                 let mut r = 0;
                 ui.horizontal(|ui| {
-                    let save = egui::Button::new(RichText::new("💾 Speichern").strong().color(Color32::WHITE)).fill(ORANGE);
+                    let b = egui::Button::new(RichText::new(t("Jetzt neu starten")).strong().color(Color32::WHITE)).fill(ORANGE);
+                    if ui.add(b).clicked() {
+                        r = 1;
+                    }
+                    if ui.button(t("Später")).clicked() {
+                        r = 2;
+                    }
+                });
+                r
+            });
+            if modal.inner == 1 {
+                self.restart_prompt = false;
+                self.restart_for_update(ctx);
+            } else if modal.inner == 2 || modal.should_close() {
+                self.restart_prompt = false;
+            }
+        }
+
+        // Speichern?
+        if let Some(pending) = self.pending {
+            let (title, text) = match pending {
+                Pending::CloseTab(i) => {
+                    let name = self.tab_meta(i).map(|m| m.name.clone()).unwrap_or_default();
+                    (t("💾 Projekt speichern?"), t1("Möchtest du deine Änderungen an „{0}“ speichern?", name))
+                }
+                _ => {
+                    let n = self.unsaved_count();
+                    if n == 1 {
+                        let i = (0..self.tabs.len()).find(|&i| self.tab_modified(i)).unwrap_or(self.active);
+                        let name = self.tab_meta(i).map(|m| m.name.clone()).unwrap_or_default();
+                        (t("💾 Projekt speichern?"), t1("Möchtest du deine Änderungen an „{0}“ speichern?", name))
+                    } else {
+                        (t("💾 Projekte speichern?"), t1("{0} Projekte haben ungespeicherte Änderungen. Alle speichern?", n))
+                    }
+                }
+            };
+            let modal = egui::Modal::new(egui::Id::unique("save_prompt")).show(ctx, |ui| {
+                ui.set_width(400.0);
+                ui.heading(title);
+                ui.add_space(4.0);
+                ui.label(text);
+                ui.label(RichText::new(t("Das Projekt bleibt im Programm – beim nächsten Start kannst du direkt weitermachen.")).small().weak());
+                ui.add_space(10.0);
+                let mut r = 0;
+                ui.horizontal(|ui| {
+                    let save = egui::Button::new(RichText::new(t("💾 Speichern")).strong().color(Color32::WHITE)).fill(ORANGE);
                     if ui.add(save).clicked() {
                         r = 1;
                     }
-                    if ui.button("Nicht speichern").clicked() {
+                    if ui.button(t("Nicht speichern")).clicked() {
                         r = 2;
                     }
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.button(t("Abbrechen")).clicked() {
                         r = 3;
                     }
                 });
                 r
             });
             let choice = if modal.inner == 0 && modal.should_close() { 3 } else { modal.inner };
-            let proceed = match choice {
-                1 => self.save_project(ctx),
-                2 => true,
-                3 => {
+            let proceed = match (choice, pending) {
+                (1, Pending::CloseTab(i)) => {
+                    if i == self.active {
+                        self.save_project(ctx)
+                    } else if let Some(Some((meta, ed))) = self.tabs.get_mut(i) {
+                        Self::save_pair(meta, ed).is_ok()
+                    } else {
+                        true
+                    }
+                }
+                (1, _) => self.save_all(ctx),
+                (2, _) => true,
+                (3, _) => {
                     self.pending = None;
                     false
                 }
@@ -898,10 +1319,9 @@ impl App {
                         self.allow_close = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    Pending::Home => {
-                        self.editor.modified = false;
-                        self.project = None;
-                        self.screen = Screen::Start;
+                    Pending::Restart => self.do_restart(ctx),
+                    Pending::CloseTab(i) => {
+                        self.close_tab_now(i);
                         self.cards = None;
                     }
                 }
@@ -934,7 +1354,7 @@ impl App {
 
     fn update_title(&mut self, ctx: &egui::Context) {
         let title = match &self.project {
-            Some(p) if self.screen != Screen::Start => {
+            Some(p) if self.screen == Screen::Editor => {
                 format!("{}{} – Skin Studio", p.name, if self.editor.modified { " •" } else { "" })
             }
             _ => "Skin Studio".to_string(),
@@ -952,8 +1372,8 @@ impl App {
                 let files: Vec<PathBuf> = match at {
                     Some(_) => Self::pick_png().into_iter().collect(),
                     None => rfd::FileDialog::new()
-                        .add_filter("Minecraft-Skin (PNG)", &["png"])
-                        .set_title("Skins für den Mixer laden")
+                        .add_filter(t("Minecraft-Skin (PNG)"), &["png"])
+                        .set_title(t("Skins für den Mixer laden"))
                         .pick_files()
                         .unwrap_or_default(),
                 };
@@ -969,29 +1389,39 @@ impl App {
                     }
                 }
                 if full {
-                    self.notify(ctx, "Es passen höchstens 26 Skins in den Mixer.", true);
+                    self.notify(ctx, t("Es passen höchstens 26 Skins in den Mixer."), true);
                 }
             }
             MixerAction::FromEditor(at) => {
-                let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Editor-Skin".into());
+                let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| t("Editor-Skin").into());
                 self.mixer.set_slot(at, self.editor.skin.clone(), self.editor.model, name);
             }
             MixerAction::OpenInEditor => {
-                let (skin, model) = (self.mixer.result.clone(), self.mixer.result_model);
-                if self.project.is_some() {
+                let (skin, raw, model) = (self.mixer.result.clone(), self.mixer.raw_result.clone(), self.mixer.result_model);
+                let linked = self.mixer.link.as_ref().map(|l| l.project_id.clone()).filter(|id| self.tab_index_of(id).is_some());
+                if let Some(id) = linked {
+                    // ins verknüpfte Projekt übernehmen (rückgängig machbar)
+                    let i = self.tab_index_of(&id).unwrap();
+                    self.switch_tab(i);
                     self.editor.replace_skin(skin, model);
+                    if let Some(l) = self.mixer.link.as_mut() {
+                        l.base = raw;
+                    }
                     self.screen = Screen::Editor;
-                    self.notify(ctx, "Gemixter Skin ist jetzt im Projekt (Strg+Z macht es rückgängig)", false);
+                    self.notify(ctx, t("Mix ins verknüpfte Projekt übernommen (Strg+Z macht es rückgängig)"), false);
                 } else {
                     let existing = project::list();
                     let name = (1..)
-                        .map(|n| format!("Partnerlook {n}"))
+                        .map(|n| t1("Partnerlook {0}", n))
                         .find(|n| !existing.iter().any(|p| &p.meta.name == n))
                         .unwrap();
-                    if let Err(e) = self.create_project(name.clone(), skin, model) {
-                        self.notify(ctx, e, true);
-                    } else {
-                        self.notify(ctx, format!("Neues Projekt „{name}“ erstellt"), false);
+                    match self.create_project(name.clone(), skin, model) {
+                        Ok(()) => {
+                            let id = self.project.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+                            self.mixer.link = Some(MixLink { project_id: id, name: name.clone(), base: raw });
+                            self.notify(ctx, t1("Neues Projekt „{0}“ – Änderungen dort werden im Mixer übernommen", name), false);
+                        }
+                        Err(e) => self.notify(ctx, e, true),
                     }
                 }
             }
@@ -1004,8 +1434,13 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Beim Schließen fragen, ob das Projekt gespeichert werden soll
-        if ctx.input(|i| i.viewport().close_requested()) && self.has_unsaved() && !self.allow_close {
+        if !self.update_checked {
+            self.update_checked = true;
+            self.updater.check(&ctx);
+        }
+
+        // Beim Schließen fragen, ob gespeichert werden soll
+        if ctx.input(|i| i.viewport().close_requested()) && self.unsaved_count() > 0 && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Close);
         }
@@ -1016,10 +1451,21 @@ impl eframe::App for App {
             self.editor.handle_shortcuts(&ctx);
         }
 
+        let show_tabs = !self.tabs.is_empty();
         if self.screen != Screen::Start {
             egui::Panel::top("top")
-                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)))
-                .show(ui, |ui| self.top_bar(ui));
+                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: if show_tabs { 0 } else { 6 } }))
+                .show(ui, |ui| {
+                    self.top_bar(ui);
+                    if show_tabs {
+                        ui.add_space(4.0);
+                        self.tab_bar(ui);
+                    }
+                });
+        } else if show_tabs {
+            egui::Panel::top("top_tabs")
+                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 0 }))
+                .show(ui, |ui| self.tab_bar(ui));
         }
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(10, 4)))
@@ -1050,12 +1496,12 @@ impl eframe::App for App {
                 if self.editor.show_2d {
                     egui::Panel::right("tex2d").resizable(true).default_size(440.0).size_range(320.0..=1000.0).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("▶").on_hover_text("2D-Textur einklappen").clicked() {
+                            if ui.button("▶").on_hover_text(t("2D-Textur einklappen")).clicked() {
                                 self.editor.show_2d = false;
                             }
-                            ui.label(RichText::new("2D-TEXTUR").small().strong().weak());
+                            ui.label(RichText::new(t("2D-TEXTUR")).small().strong().weak());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new("Mausrad: Zoom · mittlere Taste: verschieben").small().weak());
+                                ui.label(RichText::new(t("Mausrad: Zoom · mittlere Taste: verschieben")).small().weak());
                             });
                         });
                         egui::Frame::NONE.fill(Color32::from_rgb(30, 32, 38)).show(ui, |ui| self.editor.ui_canvas(ui));
@@ -1074,6 +1520,12 @@ impl eframe::App for App {
                 }
             }
             Screen::Mixer => {
+                // Änderungen aus dem verknüpften Projekt übernehmen
+                if let Some(id) = self.mixer.link.as_ref().map(|l| l.project_id.clone()) {
+                    if let Some(s) = self.project_skin(&id).cloned() {
+                        self.mixer.sync_from_editor(&s);
+                    }
+                }
                 self.mixer.recompute();
                 let mut action = MixerAction::None;
                 let has_project = self.project.is_some();
@@ -1097,6 +1549,54 @@ impl eframe::App for App {
         self.help_window(&ctx);
         self.toast_ui(&ctx);
         self.update_title(&ctx);
+    }
+}
+
+// ------------------------------------------------------------------ Installer-Fenster
+
+struct InstallerApp {
+    inst: installer::Installer,
+    logo: Option<egui::TextureHandle>,
+    portable_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl eframe::App for InstallerApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let logo = self
+            .logo
+            .get_or_insert_with(|| {
+                ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([64, 64], &icon_gen::icon_rgba(64)), egui::TextureOptions::NEAREST)
+            })
+            .id();
+        match self.inst.ui(ui, logo) {
+            installer::InstallerResult::None => {}
+            installer::InstallerResult::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            installer::InstallerResult::RunPortable => {
+                self.portable_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+}
+
+struct UninstallerApp {
+    un: installer::Uninstaller,
+    logo: Option<egui::TextureHandle>,
+}
+
+impl eframe::App for UninstallerApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let logo = self
+            .logo
+            .get_or_insert_with(|| {
+                ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([64, 64], &icon_gen::icon_rgba(64)), egui::TextureOptions::NEAREST)
+            })
+            .id();
+        if self.un.ui(ui, logo) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 
@@ -1144,7 +1644,7 @@ fn big_card(ui: &mut egui::Ui, w: f32, icon: &str, title: &str, text: &str, enab
     let galley = p.layout(text.to_string(), egui::FontId::proportional(13.5), Color32::from_gray(175).gamma_multiply(alpha), w - 36.0);
     p.galley(rect.min + egui::vec2(18.0, 72.0), galley, Color32::from_gray(175));
     if enabled {
-        p.text(rect.right_bottom() - egui::vec2(18.0, 18.0), egui::Align2::RIGHT_CENTER, "Starten  ➡", egui::FontId::proportional(13.0), if hovered { ORANGE } else { Color32::from_gray(140) });
+        p.text(rect.right_bottom() - egui::vec2(18.0, 18.0), egui::Align2::RIGHT_CENTER, t("Starten  ➡"), egui::FontId::proportional(13.0), if hovered { ORANGE } else { Color32::from_gray(140) });
     }
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
@@ -1152,14 +1652,14 @@ fn big_card(ui: &mut egui::Ui, w: f32, icon: &str, title: &str, text: &str, enab
 /// Eingeklappte 2D-Textur: schmale Leiste mit Pfeil zum Ausklappen.
 fn collapsed_strip(ui: &mut egui::Ui, open: &mut bool) {
     let rect = ui.available_rect_before_wrap();
-    let resp = ui.allocate_rect(rect, Sense::click()).on_hover_text("2D-Textur ausklappen");
+    let resp = ui.allocate_rect(rect, Sense::click()).on_hover_text(t("2D-Textur ausklappen"));
     let p = ui.painter();
     if resp.hovered() {
         p.rect_filled(rect, 0.0, Color32::from_white_alpha(8));
     }
     let col = if resp.hovered() { ORANGE } else { Color32::from_gray(180) };
     p.text(rect.center_top() + egui::vec2(0.0, 18.0), egui::Align2::CENTER_CENTER, "◀", egui::FontId::proportional(16.0), col);
-    for (k, ch) in "2D-TEXTUR".chars().enumerate() {
+    for (k, ch) in t("2D-TEXTUR").chars().enumerate() {
         p.text(
             rect.center_top() + egui::vec2(0.0, 48.0 + k as f32 * 15.0),
             egui::Align2::CENTER_CENTER,
@@ -1209,17 +1709,81 @@ fn setup_style(ctx: &egui::Context) {
     });
 }
 
+fn icon() -> Arc<egui::IconData> {
+    Arc::new(egui::IconData { rgba: icon_gen::icon_rgba(64), width: 64, height: 64 })
+}
+
+/// Startet ein Fenster; bei Grafikproblemen wird schrittweise zurückgeschaltet.
+fn run_window(
+    viewport: egui::ViewportBuilder,
+    make: impl Fn(&eframe::CreationContext<'_>) -> Box<dyn eframe::App>,
+) -> eframe::Result {
+    // Bevorzugt: Grafikkarte mit Tiefenpuffer und Kantenglättung (MSAA).
+    let attempts: [(u16, u8); 3] = [(4, 24), (0, 24), (0, 0)];
+    let mut last_err = None;
+    for (msaa, depth) in attempts {
+        gpu3d::GPU_ENABLED.store(depth > 0, std::sync::atomic::Ordering::Relaxed);
+        let options = eframe::NativeOptions {
+            viewport: viewport.clone(),
+            multisampling: msaa,
+            depth_buffer: depth,
+            ..Default::default()
+        };
+        match eframe::run_native("Skin Studio", options, Box::new(|cc| Ok(make(cc)))) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("Start mit MSAA {msaa} / Tiefe {depth} fehlgeschlagen: {e}");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
 fn main() -> eframe::Result {
-    let icon = egui::IconData { rgba: icon_gen::icon_rgba(64), width: 64, height: 64 };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    let args: Vec<String> = std::env::args().collect();
+    let settings = project::load_settings();
+    i18n::set_lang(settings.lang.unwrap_or_else(i18n::system_lang));
+
+    if args.iter().any(|a| a == "--uninstall") {
+        let vp = egui::ViewportBuilder::default()
             .with_title("Skin Studio")
-            .with_inner_size([1440.0, 880.0])
-            .with_maximized(true)
-            .with_min_inner_size([1060.0, 640.0])
-            .with_drag_and_drop(true)
-            .with_icon(Arc::new(icon)),
-        ..Default::default()
-    };
-    eframe::run_native("Skin Studio", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+            .with_inner_size([520.0, 300.0])
+            .with_resizable(false)
+            .with_icon(icon());
+        return run_window(vp, |cc| {
+            setup_style(&cc.egui_ctx);
+            Box::new(UninstallerApp { un: installer::Uninstaller::new(), logo: None })
+        });
+    }
+
+    if installer::should_show_installer(&args) {
+        let portable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let p2 = portable.clone();
+        let vp = egui::ViewportBuilder::default()
+            .with_title(t("Skin Studio – Installation"))
+            .with_inner_size([640.0, 460.0])
+            .with_resizable(false)
+            .with_icon(icon());
+        run_window(vp, move |cc| {
+            setup_style(&cc.egui_ctx);
+            Box::new(InstallerApp { inst: installer::Installer::new(), logo: None, portable_requested: p2.clone() })
+        })?;
+        if !portable.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        // „Ohne Installation verwenden“ → direkt weiter ins Programm
+        if let Some(l) = project::load_settings().lang {
+            i18n::set_lang(l);
+        }
+    }
+
+    let vp = egui::ViewportBuilder::default()
+        .with_title("Skin Studio")
+        .with_inner_size([1440.0, 880.0])
+        .with_maximized(true)
+        .with_min_inner_size([1060.0, 640.0])
+        .with_drag_and_drop(true)
+        .with_icon(icon());
+    run_window(vp, |cc| Box::new(App::new(cc)))
 }

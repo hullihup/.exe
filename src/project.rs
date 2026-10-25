@@ -1,6 +1,7 @@
 //! Projekte werden im Programm selbst gespeichert (im App-Datenordner),
 //! nicht als einzelne Dateien, um die man sich kümmern muss.
 
+use crate::i18n::{t, t1};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,14 +46,14 @@ pub fn new_id() -> String {
 
 pub fn save(meta: &ProjectMeta, skin: &Skin) -> Result<(), String> {
     let dir = projects_dir().join(&meta.id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Ordner konnte nicht angelegt werden: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| t1("Ordner konnte nicht angelegt werden: {0}", e))?;
     let model = if meta.model == Model::Slim { "slim" } else { "classic" };
     let info = format!("name={}\nmodel={}\nmodified={}\n", meta.name.replace('\n', " "), model, meta.modified);
     // Erst in temporäre Dateien schreiben, dann umbenennen: so geht nie ein Projekt kaputt.
     let write = |name: &str, data: &[u8]| -> Result<(), String> {
         let tmp = dir.join(format!("{name}.tmp"));
-        std::fs::write(&tmp, data).map_err(|e| format!("Speichern fehlgeschlagen: {e}"))?;
-        std::fs::rename(&tmp, dir.join(name)).map_err(|e| format!("Speichern fehlgeschlagen: {e}"))
+        std::fs::write(&tmp, data).map_err(|e| t1("Speichern fehlgeschlagen: {0}", e))?;
+        std::fs::rename(&tmp, dir.join(name)).map_err(|e| t1("Speichern fehlgeschlagen: {0}", e))
     };
     write("skin.png", &skin.to_png())?;
     write("project.txt", info.as_bytes())?;
@@ -65,7 +66,7 @@ pub fn load(id: &str) -> Option<StoredProject> {
     let info = std::fs::read_to_string(dir.join("project.txt")).ok()?;
     let bytes = std::fs::read(dir.join("skin.png")).ok()?;
     let skin = Skin::from_png(&bytes).ok()?;
-    let mut meta = ProjectMeta { id: id.to_string(), name: "Projekt".into(), model: Model::Classic, modified: 0 };
+    let mut meta = ProjectMeta { id: id.to_string(), name: t("Projekt").into(), model: Model::Classic, modified: 0 };
     for line in info.lines() {
         if let Some((k, v)) = line.split_once('=') {
             match k {
@@ -113,18 +114,53 @@ pub fn set_last(id: &str) {
 /// Ein freier Name wie „Projekt 3“.
 pub fn next_name(existing: &[StoredProject]) -> String {
     (1..)
-        .map(|n| format!("Projekt {n}"))
+        .map(|n| t1("Projekt {0}", n))
         .find(|n| !existing.iter().any(|p| &p.meta.name == n))
         .unwrap()
 }
 
-pub fn format_time(t: u64) -> String {
-    let age = now().saturating_sub(t);
+pub fn format_time(time: u64) -> String {
+    let age = now().saturating_sub(time);
     match age {
-        0..=59 => "gerade eben".into(),
-        60..=3599 => format!("vor {} min", age / 60),
-        3600..=86_399 => format!("vor {} h", age / 3600),
-        86_400..=172_799 => "gestern".into(),
-        _ => format!("vor {} Tagen", age / 86_400),
+        0..=59 => t("gerade eben").into(),
+        60..=3599 => t1("vor {0} min", age / 60),
+        3600..=86_399 => t1("vor {0} h", age / 3600),
+        86_400..=172_799 => t("gestern").into(),
+        _ => t1("vor {0} Tagen", age / 86_400),
     }
+}
+
+// ------------------------------------------------------------------ Einstellungen
+
+#[derive(Clone, Debug, Default)]
+pub struct Settings {
+    pub lang: Option<crate::i18n::Lang>,
+    /// ohne Installation verwenden
+    pub portable: bool,
+}
+
+pub fn load_settings() -> Settings {
+    let mut s = Settings::default();
+    if let Ok(txt) = std::fs::read_to_string(data_dir().join("settings.txt")) {
+        for line in txt.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                match k.trim() {
+                    "lang" => s.lang = crate::i18n::Lang::from_code(v),
+                    "portable" => s.portable = v.trim() == "1",
+                    _ => {}
+                }
+            }
+        }
+    }
+    s
+}
+
+pub fn save_settings(s: &Settings) {
+    let _ = std::fs::create_dir_all(data_dir());
+    let mut txt = String::new();
+    if let Some(l) = s.lang {
+        txt += &format!("lang={}\n", l.code());
+    }
+    txt += &format!("portable={}\n", if s.portable { 1 } else { 0 });
+    let _ = std::fs::write(data_dir().join("settings.txt"), txt);
 }

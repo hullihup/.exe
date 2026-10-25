@@ -1,5 +1,6 @@
 //! Der Pixel-Editor: Werkzeuge, Verlauf, 2D-Zeichenfläche und Farbwahl.
 
+use crate::i18n::t;
 use std::collections::VecDeque;
 
 use eframe::egui::{
@@ -40,15 +41,15 @@ impl Tool {
     ];
     pub fn name(self) -> &'static str {
         match self {
-            Tool::Pencil => "Stift",
-            Tool::Eraser => "Radierer",
-            Tool::Noise => "Rauschpinsel",
-            Tool::Shade => "Licht/Schatten",
-            Tool::Bucket => "Füllen",
-            Tool::Replace => "Farbe ersetzen",
-            Tool::Line => "Linie",
-            Tool::Rect => "Rechteck",
-            Tool::Picker => "Pipette",
+            Tool::Pencil => t("Stift"),
+            Tool::Eraser => t("Radierer"),
+            Tool::Noise => t("Rauschpinsel"),
+            Tool::Shade => t("Licht/Schatten"),
+            Tool::Bucket => t("Füllen"),
+            Tool::Replace => t("Farbe ersetzen"),
+            Tool::Line => t("Linie"),
+            Tool::Rect => t("Rechteck"),
+            Tool::Picker => t("Pipette"),
         }
     }
     pub fn key(self) -> Key {
@@ -66,15 +67,15 @@ impl Tool {
     }
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Pencil => "Malt mit der Hauptfarbe (Rechtsklick: Zweitfarbe).",
-            Tool::Eraser => "Macht Pixel durchsichtig.",
-            Tool::Noise => "Malt die Farbe in zufälligen Helligkeiten – für lebendige Flächen.",
-            Tool::Shade => "Links aufhellen, rechts abdunkeln. Ideal für Falten und Schatten.",
-            Tool::Bucket => "Füllt zusammenhängende, ähnliche Pixel.",
-            Tool::Replace => "Ersetzt eine Farbe überall auf dem Skin.",
-            Tool::Line => "Ziehen für eine gerade Linie (nur in der 2D-Ansicht).",
-            Tool::Rect => "Ziehen für ein Rechteck (nur in der 2D-Ansicht).",
-            Tool::Picker => "Nimmt eine Farbe auf. Tipp: Alt + Klick geht mit jedem Werkzeug.",
+            Tool::Pencil => t("Malt mit der Hauptfarbe (Rechtsklick: Zweitfarbe)."),
+            Tool::Eraser => t("Macht Pixel durchsichtig."),
+            Tool::Noise => t("Malt die Farbe in zufälligen Helligkeiten – für lebendige Flächen."),
+            Tool::Shade => t("Links aufhellen, rechts abdunkeln. Ideal für Falten und Schatten."),
+            Tool::Bucket => t("Füllt zusammenhängende, ähnliche Pixel."),
+            Tool::Replace => t("Ersetzt eine Farbe überall auf dem Skin."),
+            Tool::Line => t("Ziehen für eine gerade Linie (nur in der 2D-Ansicht)."),
+            Tool::Rect => t("Ziehen für ein Rechteck (nur in der 2D-Ansicht)."),
+            Tool::Picker => t("Nimmt eine Farbe auf. Tipp: Alt + Klick geht mit jedem Werkzeug."),
         }
     }
     fn paints_in_3d(self) -> bool {
@@ -212,6 +213,7 @@ impl Editor {
         let mut preview = Preview::new();
         preview.antialias = true;
         preview.ghosts = true;
+        preview.grid = true;
         Editor {
             skin: skin::starter_skin(),
             model: Model::Classic,
@@ -220,8 +222,8 @@ impl Editor {
             tool: Tool::Pencil,
             size: 1,
             round_brush: false,
-            noise_amount: 0.25,
-            noise_levels: 5,
+            noise_amount: 0.14,
+            noise_levels: 3,
             noise_hue: 0.0,
             shade_amount: 0.12,
             hue_shift: true,
@@ -260,6 +262,33 @@ impl Editor {
             rng: Rng::from_time(),
             adjust: None,
         }
+    }
+
+    /// Neuer, leerer Editor mit denselben Werkzeug- und Farbeinstellungen (für neue Tabs).
+    pub fn fresh_from(&self) -> Editor {
+        let mut e = Editor::new();
+        e.tool = self.tool;
+        e.size = self.size;
+        e.round_brush = self.round_brush;
+        e.noise_amount = self.noise_amount;
+        e.noise_levels = self.noise_levels;
+        e.noise_hue = self.noise_hue;
+        e.shade_amount = self.shade_amount;
+        e.hue_shift = self.hue_shift;
+        e.tolerance = self.tolerance;
+        e.fill_limit = self.fill_limit;
+        e.fill_noise = self.fill_noise;
+        e.rect_fill = self.rect_fill;
+        e.mirror = self.mirror;
+        e.primary = self.primary;
+        e.secondary = self.secondary;
+        e.recent = self.recent.clone();
+        e.show_grid = self.show_grid;
+        e.show_regions = self.show_regions;
+        e.show_2d = self.show_2d;
+        e.preview.grid = self.preview.grid;
+        e.preview.antialias = self.preview.antialias;
+        e
     }
 
     // ------------------------------------------------------------------ Verlauf
@@ -658,6 +687,10 @@ impl Editor {
 
     fn end_stroke(&mut self) {
         let Some(st) = self.stroke.take() else { return };
+        // Nach dem Farbe-Aufnehmen direkt weiter mit dem Stift malen
+        if st.tool == Tool::Picker && self.tool == Tool::Picker {
+            self.tool = Tool::Pencil;
+        }
         if matches!(st.tool, Tool::Line | Tool::Rect) {
             let pts = self.shape_points(&st);
             let secondary = st.secondary;
@@ -744,7 +777,7 @@ impl Editor {
 
     pub fn ui_tools(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.label(RichText::new("WERKZEUGE").small().strong().weak());
+        ui.label(RichText::new(t("WERKZEUGE")).small().strong().weak());
         ui.add_space(2.0);
         egui::Grid::new("tools").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
             for (k, t) in Tool::ALL.into_iter().enumerate() {
@@ -753,7 +786,7 @@ impl Editor {
                 let btn = egui::Button::selectable(selected, text)
                     .min_size(egui::vec2(119.0, 30.0))
                     .wrap_mode(egui::TextWrapMode::Extend);
-                let r = ui.add(btn).on_hover_text(format!("{}\nTaste: {:?}", t.hint(), t.key()));
+                let r = ui.add(btn).on_hover_text(format!("{}\n{}: {:?}", t.hint(), crate::i18n::t("Taste"), t.key()));
                 let icon_rect = Rect::from_center_size(r.rect.left_center() + egui::vec2(17.0, 0.0), Vec2::splat(16.0));
                 let col = if selected { Color32::WHITE } else { ui.visuals().text_color() };
                 crate::ui_util::paint_tool_icon(ui.painter(), icon_rect, t, col);
@@ -768,53 +801,53 @@ impl Editor {
 
         ui.add_space(8.0);
         ui.separator();
-        ui.label(RichText::new("OPTIONEN").small().strong().weak());
+        ui.label(RichText::new(t("OPTIONEN")).small().strong().weak());
         ui.label(RichText::new(self.tool.hint()).small().weak());
         ui.add_space(4.0);
 
         let brush = matches!(self.tool, Tool::Pencil | Tool::Eraser | Tool::Noise | Tool::Shade | Tool::Line);
         if brush {
             ui.horizontal(|ui| {
-                ui.label("Größe");
-                ui.add(egui::Slider::new(&mut self.size, 1..=16).suffix(" px"));
+                ui.label(t("Größe"));
+                ui.add(egui::Slider::new(&mut self.size, 1..=16).suffix(t(" px")));
             });
             if self.tool != Tool::Line {
-                ui.checkbox(&mut self.round_brush, "Runde Pinselspitze");
+                ui.checkbox(&mut self.round_brush, t("Runde Pinselspitze"));
             }
         }
         match self.tool {
             Tool::Noise => self.noise_options(ui),
             Tool::Shade => {
                 ui.horizontal(|ui| {
-                    ui.label("Stärke");
+                    ui.label(t("Stärke"));
                     ui.add(egui::Slider::new(&mut self.shade_amount, 0.02..=0.5).show_value(false));
                 });
-                ui.checkbox(&mut self.hue_shift, "Farbton mitschieben")
-                    .on_hover_text("Lichter werden etwas wärmer, Schatten etwas kühler – wirkt natürlicher.");
+                ui.checkbox(&mut self.hue_shift, t("Farbton mitschieben"))
+                    .on_hover_text(t("Lichter werden etwas wärmer, Schatten etwas kühler – wirkt natürlicher."));
             }
             Tool::Bucket | Tool::Replace => {
                 ui.horizontal(|ui| {
-                    ui.label("Toleranz");
+                    ui.label(t("Toleranz"));
                     ui.add(egui::Slider::new(&mut self.tolerance, 0.0..=100.0).suffix(" %"));
                 });
                 if self.tool == Tool::Bucket {
-                    ui.label("Füllen begrenzen auf:");
+                    ui.label(t("Füllen begrenzen auf:"));
                     ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut self.fill_limit, FillLimit::Face, "Fläche");
-                        ui.selectable_value(&mut self.fill_limit, FillLimit::Part, "Körperteil");
-                        ui.selectable_value(&mut self.fill_limit, FillLimit::All, "Alles");
+                        ui.selectable_value(&mut self.fill_limit, FillLimit::Face, t("Fläche"));
+                        ui.selectable_value(&mut self.fill_limit, FillLimit::Part, t("Körperteil"));
+                        ui.selectable_value(&mut self.fill_limit, FillLimit::All, t("Alles"));
                     });
                 }
-                ui.checkbox(&mut self.fill_noise, "Mit Rauschen füllen");
+                ui.checkbox(&mut self.fill_noise, t("Mit Rauschen füllen"));
                 if self.fill_noise {
                     self.noise_options(ui);
                 }
             }
             Tool::Line | Tool::Rect => {
                 if self.tool == Tool::Rect {
-                    ui.checkbox(&mut self.rect_fill, "Gefüllt");
+                    ui.checkbox(&mut self.rect_fill, t("Gefüllt"));
                 }
-                ui.checkbox(&mut self.fill_noise, "Mit Rauschen");
+                ui.checkbox(&mut self.fill_noise, t("Mit Rauschen"));
                 if self.fill_noise {
                     self.noise_options(ui);
                 }
@@ -824,23 +857,23 @@ impl Editor {
 
         ui.add_space(8.0);
         ui.separator();
-        ui.toggle_value(&mut self.mirror, "↔  Spiegeln (M)")
-            .on_hover_text("Alles, was du malst, erscheint auch auf der anderen Körperseite.");
+        ui.toggle_value(&mut self.mirror, t("↔  Spiegeln (M)"))
+            .on_hover_text(t("Alles, was du malst, erscheint auch auf der anderen Körperseite."));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(self.can_undo(), egui::Button::new("⟲ Zurück")).on_hover_text("Strg+Z").clicked() {
+            if ui.add_enabled(self.can_undo(), egui::Button::new(t("⟲ Zurück"))).on_hover_text(t("Strg+Z")).clicked() {
                 self.undo();
             }
-            if ui.add_enabled(self.can_redo(), egui::Button::new("⟳ Vor")).on_hover_text("Strg+Y").clicked() {
+            if ui.add_enabled(self.can_redo(), egui::Button::new(t("⟳ Vor"))).on_hover_text(t("Strg+Y")).clicked() {
                 self.redo();
             }
         });
         ui.add_space(10.0);
         ui.separator();
-        let btn = egui::Button::new(RichText::new("📂  Skin importieren …").strong()).min_size(egui::vec2(ui.available_width(), 32.0));
+        let btn = egui::Button::new(RichText::new(t("📂  Skin importieren …")).strong()).min_size(egui::vec2(ui.available_width(), 32.0));
         if ui
             .add(btn)
-            .on_hover_text("Einen PNG-Skin in dieses Projekt laden (Strg+O).\nStrg+Z macht es rückgängig.\nOder PNG einfach ins Fenster ziehen.")
+            .on_hover_text(t("Einen PNG-Skin in dieses Projekt laden (Strg+O).\nStrg+Z macht es rückgängig.\nOder PNG einfach ins Fenster ziehen."))
             .clicked()
         {
             self.import_requested = true;
@@ -849,17 +882,16 @@ impl Editor {
 
     fn noise_options(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Stärke");
-            ui.add(egui::Slider::new(&mut self.noise_amount, 0.02..=0.8).show_value(false));
+            ui.label(t("Stärke"));
+            ui.add(egui::Slider::new(&mut self.noise_amount, 0.02..=0.4).show_value(false));
         });
         ui.horizontal(|ui| {
-            ui.label("Stufen");
-            ui.add(egui::Slider::new(&mut self.noise_levels, 0..=8).custom_formatter(|v, _| {
-                if v < 2.0 { "frei".into() } else { format!("{v:.0}") }
-            }));
+            ui.label(t("Stufen"));
+            ui.add(egui::Slider::new(&mut self.noise_levels, 2..=6).suffix(t(" Farben")))
+                .on_hover_text(t("Wie viele verschiedene Helligkeiten der Pinsel benutzt"));
         });
         ui.horizontal(|ui| {
-            ui.label("Farbton");
+            ui.label(t("Farbton"));
             ui.add(egui::Slider::new(&mut self.noise_hue, 0.0..=1.0).show_value(false));
         });
         // kleine Vorschau des Rauschens
@@ -881,7 +913,7 @@ impl Editor {
 
     pub fn ui_colors(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.label(RichText::new("FARBE").small().strong().weak());
+        ui.label(RichText::new(t("FARBE")).small().strong().weak());
         ui.horizontal(|ui| {
             for sec in [false, true] {
                 let c = self.active_color(sec);
@@ -890,9 +922,9 @@ impl Editor {
                 if r.clicked() {
                     self.edit_secondary = sec;
                 }
-                r.on_hover_text(if sec { "Zweitfarbe (Rechtsklick)" } else { "Hauptfarbe (Linksklick)" });
+                r.on_hover_text(if sec { t("Zweitfarbe (Rechtsklick)") } else { t("Hauptfarbe (Linksklick)") });
             }
-            if ui.button("⬌").on_hover_text("Farben tauschen (X)").clicked() {
+            if ui.button("⬌").on_hover_text(t("Farben tauschen (X)")).clicked() {
                 std::mem::swap(&mut self.primary, &mut self.secondary);
             }
         });
@@ -923,7 +955,7 @@ impl Editor {
             self.hex_for = cur;
         }
         ui.horizontal(|ui| {
-            ui.label("Hex");
+            ui.label(t("Hex"));
             let r = ui.add(egui::TextEdit::singleline(&mut self.hex).desired_width(90.0));
             if r.changed() {
                 if let Some(v) = color::from_hex(&self.hex) {
@@ -938,17 +970,17 @@ impl Editor {
         });
 
         ui.add_space(6.0);
-        ui.label(RichText::new("Schattierungen").small().weak());
+        ui.label(RichText::new(t("Schattierungen")).small().weak());
         let shades = color::shades(cur, 9);
         self.swatch_row(ui, &shades, 9);
 
         ui.add_space(6.0);
-        ui.label(RichText::new("Palette").small().weak());
+        ui.label(RichText::new(t("Palette")).small().weak());
         self.swatch_row(ui, &PALETTE, 8);
 
         if !self.recent.is_empty() {
             ui.add_space(6.0);
-            ui.label(RichText::new("Zuletzt benutzt").small().weak());
+            ui.label(RichText::new(t("Zuletzt benutzt")).small().weak());
             let recent = self.recent.clone();
             self.swatch_row(ui, &recent, 8);
         }
@@ -966,7 +998,7 @@ impl Editor {
                 if r.secondary_clicked() {
                     self.secondary = c;
                 }
-                r.on_hover_text(format!("{}\nLinks: Hauptfarbe · Rechts: Zweitfarbe", color::to_hex(c)));
+                r.on_hover_text(format!("{}\n{}", color::to_hex(c), t("Links: Hauptfarbe · Rechts: Zweitfarbe")));
                 if k % per_row == per_row - 1 {
                     ui.end_row();
                 }
@@ -976,28 +1008,28 @@ impl Editor {
 
     pub fn ui_view_options(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.label(RichText::new("MODELL").small().strong().weak());
+        ui.label(RichText::new(t("MODELL")).small().strong().weak());
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.model, Model::Classic, "Classic").on_hover_text(Model::Classic.name());
-            ui.selectable_value(&mut self.model, Model::Slim, "Slim").on_hover_text(Model::Slim.name());
+            ui.selectable_value(&mut self.model, Model::Classic, t("Classic")).on_hover_text(Model::Classic.name());
+            ui.selectable_value(&mut self.model, Model::Slim, t("Slim")).on_hover_text(Model::Slim.name());
         });
     }
 
     /// Körperteile und Ebenen ein-/ausblenden (wie bei Skindex), damit man besser an
     /// verdeckte Stellen kommt.
     pub fn ui_parts(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("KÖRPERTEILE").small().strong().weak());
+        ui.label(RichText::new(t("KÖRPERTEILE")).small().strong().weak());
         let orange = Color32::from_rgb(242, 140, 40);
         let bw = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).floor();
         ui.horizontal(|ui| {
-            for (k, name) in [(0usize, "1. Ebene"), (1, "2. Ebene")] {
+            for (k, name) in [(0usize, t("1. Ebene")), (1, t("2. Ebene"))] {
                 let on = self.layer_on[k];
                 let text = RichText::new(name).strong().color(if on { Color32::WHITE } else { ui.visuals().weak_text_color() });
                 let btn = egui::Button::new(text)
                     .corner_radius(0.0)
                     .fill(if on { orange } else { ui.visuals().widgets.inactive.weak_bg_fill })
                     .min_size(egui::vec2(bw, 24.0));
-                let tip = if k == 0 { "Körper (1. Ebene) ein-/ausblenden" } else { "Äußere Ebene (Hut, Jacke …) ein-/ausblenden" };
+                let tip = if k == 0 { t("Körper (1. Ebene) ein-/ausblenden") } else { t("Äußere Ebene (Hut, Jacke …) ein-/ausblenden") };
                 if ui.add(btn).on_hover_text(tip).clicked() {
                     self.layer_on[k] = !on;
                 }
@@ -1048,18 +1080,15 @@ impl Editor {
             p.rect_filled(pr, 0.0, fill);
             let stroke = if on { Stroke::new(2.0, orange) } else { Stroke::new(1.5, orange.gamma_multiply(0.35)) };
             p.rect_stroke(pr, 0.0, stroke, StrokeKind::Inside);
-            resp.on_hover_text(format!(
-                "{} – Klick: ein-/ausblenden\nRechtsklick: nur dieses Teil zeigen",
-                part.name()
-            ));
+            resp.on_hover_text(crate::i18n::t1("{0} – Klick: ein-/ausblenden\nRechtsklick: nur dieses Teil zeigen", part.name()));
         }
         if self.part_on.iter().any(|b| !b) || self.layer_on.iter().any(|b| !b) {
-            if ui.small_button("Alle zeigen").clicked() {
+            if ui.small_button(t("Alle zeigen")).clicked() {
                 self.part_on = [true; 6];
                 self.layer_on = [true; 2];
             }
         } else {
-            ui.add(egui::Label::new(RichText::new("Klick: aus-/einblenden\nRechtsklick: nur dieses Teil").small().weak()));
+            ui.add(egui::Label::new(RichText::new(t("Klick: aus-/einblenden\nRechtsklick: nur dieses Teil")).small().weak()));
         }
         self.sync_vis();
     }
@@ -1086,9 +1115,12 @@ impl Editor {
     pub fn ui_preview(&mut self, ui: &mut egui::Ui) {
         self.sync_vis();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("3D-ANSICHT").small().strong().weak());
+            ui.label(RichText::new(t("3D-ANSICHT")).small().strong().weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.preview.antialias, "Glätten");
+                ui.checkbox(&mut self.preview.grid, t("Raster")).on_hover_text(t("Pixelraster auf dem Modell"));
+                if !crate::gpu3d::gpu_active() {
+                    ui.checkbox(&mut self.preview.antialias, t("Glätten"));
+                }
             });
         });
         let h = (ui.available_height() - 64.0).max(120.0);
@@ -1124,24 +1156,24 @@ impl Editor {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             use std::f32::consts::PI;
-            if ui.button("Vorne").clicked() {
+            if ui.button(t("Vorne")).clicked() {
                 self.preview.set_view(0.0, 0.1);
             }
-            if ui.button("Hinten").clicked() {
+            if ui.button(t("Hinten")).clicked() {
                 self.preview.set_view(PI, 0.1);
             }
-            if ui.button("Links").clicked() {
+            if ui.button(t("Links")).clicked() {
                 self.preview.set_view(-PI / 2.0, 0.1);
             }
-            if ui.button("Rechts").clicked() {
+            if ui.button(t("Rechts")).clicked() {
                 self.preview.set_view(PI / 2.0, 0.1);
             }
-            if ui.button("⟲").on_hover_text("Ansicht zurücksetzen").clicked() {
+            if ui.button("⟲").on_hover_text(t("Ansicht zurücksetzen")).clicked() {
                 self.preview.cam = Default::default();
             }
         });
         ui.label(
-            RichText::new("Linksklick: malen · Rechte Maustaste oder leere Fläche ziehen: drehen · Mausrad: Zoom · Doppelklick daneben: Ansicht zurücksetzen")
+            RichText::new(t("Linksklick: malen · Rechte Maustaste oder leere Fläche ziehen: drehen · Mausrad: Zoom · Doppelklick daneben: Ansicht zurücksetzen"))
                 .small()
                 .weak(),
         );
@@ -1327,8 +1359,8 @@ impl Editor {
         }
 
         // Raster
-        if self.show_grid && scale_px >= 7.0 {
-            let col = Color32::from_black_alpha(if scale_px >= 14.0 { 70 } else { 40 });
+        if self.show_grid && scale_px >= 5.0 {
+            let col = Color32::from_black_alpha(if scale_px >= 12.0 { 110 } else { 70 });
             for k in 1..SIZE {
                 let x = origin.x + k as f32 * scale;
                 let y = origin.y + k as f32 * scale;
@@ -1418,17 +1450,17 @@ impl Editor {
         let mut apply = false;
         let mut cancel = false;
         let mut changed = false;
-        egui::Window::new("🎨 Farben anpassen")
+        egui::Window::new(t("🎨 Farben anpassen"))
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("Bereich:");
+                ui.label(t("Bereich:"));
                 ui.horizontal_wrapped(|ui| {
-                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::All, "Ganzer Skin").changed();
-                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::Layer(Layer::Base), "1. Ebene").changed();
-                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::Layer(Layer::Overlay), "2. Ebene").changed();
+                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::All, t("Ganzer Skin")).changed();
+                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::Layer(Layer::Base), t("1. Ebene")).changed();
+                    changed |= ui.selectable_value(&mut st.target, AdjustTarget::Layer(Layer::Overlay), t("2. Ebene")).changed();
                 });
                 ui.horizontal_wrapped(|ui| {
                     for p in Part::ALL {
@@ -1437,25 +1469,25 @@ impl Editor {
                 });
                 ui.add_space(6.0);
                 egui::Grid::new("adj").num_columns(2).show(ui, |ui| {
-                    ui.label("Farbton");
+                    ui.label(t("Farbton"));
                     changed |= ui.add(egui::Slider::new(&mut st.hue, -180.0..=180.0).suffix("°")).changed();
                     ui.end_row();
-                    ui.label("Sättigung");
+                    ui.label(t("Sättigung"));
                     changed |= ui.add(egui::Slider::new(&mut st.sat, -1.0..=1.0)).changed();
                     ui.end_row();
-                    ui.label("Helligkeit");
+                    ui.label(t("Helligkeit"));
                     changed |= ui.add(egui::Slider::new(&mut st.bright, -1.0..=1.0)).changed();
                     ui.end_row();
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("✔ Übernehmen").clicked() {
+                    if ui.button(t("✔ Übernehmen")).clicked() {
                         apply = true;
                     }
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.button(t("Abbrechen")).clicked() {
                         cancel = true;
                     }
-                    if ui.button("Zurücksetzen").clicked() {
+                    if ui.button(t("Zurücksetzen")).clicked() {
                         st.hue = 0.0;
                         st.sat = 0.0;
                         st.bright = 0.0;
@@ -1495,7 +1527,7 @@ impl Editor {
         if let Some((x, y)) = self.hover2d.or(self.hover3d) {
             s += &format!("X {x:>2}  Y {y:>2}");
             let c = self.skin.get(x, y);
-            s += &format!("   {}", if c[3] == 0 { "durchsichtig".to_string() } else { color::to_hex(c) });
+            s += &format!("   {}", if c[3] == 0 { t("durchsichtig").to_string() } else { color::to_hex(c) });
         }
         s
     }

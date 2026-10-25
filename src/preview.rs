@@ -1,24 +1,34 @@
 //! 3D-Vorschau-Widget: drehen, zoomen und (optional) direkt auf dem Modell malen.
+//!
+//! Normalerweise zeichnet die Grafikkarte ([`crate::gpu3d`]); nur wenn OpenGL nicht
+//! verfügbar ist, springt der Software-Renderer ([`crate::render3d`]) ein.
 
-use eframe::egui::{self, Color32, ColorImage, PointerButton, Rect, Sense, TextureHandle, TextureOptions, Vec2};
+use eframe::egui::{self, Color32, ColorImage, PointerButton, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 
+use crate::gpu3d::{self, View};
 use crate::render3d::{render, Camera, RenderParams, Visibility};
 use crate::skin::{Model, Skin, SIZE};
 
 #[derive(Default)]
 pub struct Preview {
     pub cam: Camera,
+    // Software-Renderer
     tex: Option<TextureHandle>,
     last_params: Option<RenderParams>,
     last_skin: Option<Skin>,
     pick: Vec<u16>,
     pick_size: (usize, usize),
+    // Grafikkarte: Skin-Textur
+    skin_tex: Option<TextureHandle>,
+    skin_tex_src: Option<Skin>,
     painting: bool,
     rotating: bool,
     last_pointer: Option<egui::Pos2>,
     pub antialias: bool,
     /// leere Pixel andeuten (Editor)
     pub ghosts: bool,
+    /// Pixelraster auf dem Modell
+    pub grid: bool,
 }
 
 pub struct PreviewInput {
@@ -42,7 +52,8 @@ impl Preview {
         self.cam.pitch = pitch;
     }
 
-    fn pick_at(&self, rect: Rect, pos: egui::Pos2, ppp: f32) -> Option<(usize, usize)> {
+    /// Texel unter einem Bildschirmpunkt (Software-Renderer: aus dem Pick-Puffer).
+    fn pick_cpu(&self, rect: Rect, pos: egui::Pos2, ppp: f32) -> Option<(usize, usize)> {
         if !rect.contains(pos) || self.pick.is_empty() {
             return None;
         }
@@ -75,15 +86,31 @@ impl Preview {
     ) -> PreviewInput {
         let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
+        let gpu = gpu3d::gpu_active();
+        let (wpx, hpx) = ((rect.width() * ppp).round().max(1.0), (rect.height() * ppp).round().max(1.0));
         let mut stroke_started = false;
         let mut stroke_ended = false;
 
+        // Treffer-Test: auf der Grafikkarte per Strahl, sonst über den Pick-Puffer
+        let view = View::new(self.cam, wpx, hpx);
+        let ghosts = self.ghosts;
+        let pick = |me: &Self, p: egui::Pos2| -> Option<(usize, usize)> {
+            if !rect.contains(p) {
+                return None;
+            }
+            if gpu {
+                gpu3d::pick(skin, model, &vis, &view, (p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp, ghosts)
+            } else {
+                me.pick_cpu(rect, p, ppp)
+            }
+        };
+
         let pointer = response.interact_pointer_pos().or(response.hover_pos());
-        let hover = pointer.and_then(|p| self.pick_at(rect, p, ppp));
+        let hover = pointer.and_then(|p| pick(self, p));
 
         // Eingabe
         if response.drag_started_by(PointerButton::Primary) {
-            let start = ui.input(|i| i.pointer.press_origin()).and_then(|p| self.pick_at(rect, p, ppp));
+            let start = ui.input(|i| i.pointer.press_origin()).and_then(|p| pick(self, p));
             if paint_enabled && start.is_some() {
                 self.painting = true;
                 stroke_started = true;
@@ -99,6 +126,25 @@ impl Preview {
             stroke_started = true;
             stroke_ended = true;
         }
+
+        // Texel entlang des Mauswegs sammeln (gegen Lücken bei schnellen Bewegungen)
+        let mut texels = Vec::new();
+        if stroke_started || self.painting {
+            if let Some(cur) = pointer {
+                let from = if stroke_started { cur } else { self.last_pointer.unwrap_or(cur) };
+                let steps = ((cur - from).length() * ppp).ceil().max(1.0) as usize;
+                for k in 0..=steps {
+                    let p = from + (cur - from) * (k as f32 / steps as f32);
+                    if let Some(t) = pick(self, p) {
+                        if texels.last() != Some(&t) && !texels.contains(&t) {
+                            texels.push(t);
+                        }
+                    }
+                }
+            }
+        }
+        self.last_pointer = pointer;
+
         if self.rotating && response.dragged() {
             let d = response.drag_delta();
             self.cam.yaw += d.x * 0.012;
@@ -121,53 +167,6 @@ impl Preview {
             self.cam = Camera::default();
         }
 
-        // Texel entlang des Mauswegs sammeln (gegen Lücken bei schnellen Bewegungen)
-        let mut texels = Vec::new();
-        if stroke_started || self.painting {
-            if let Some(cur) = pointer {
-                let from = if stroke_started { cur } else { self.last_pointer.unwrap_or(cur) };
-                let steps = ((cur - from).length() * ppp).ceil().max(1.0) as usize;
-                for k in 0..=steps {
-                    let p = from + (cur - from) * (k as f32 / steps as f32);
-                    if let Some(t) = self.pick_at(rect, p, ppp) {
-                        if texels.last() != Some(&t) && !texels.contains(&t) {
-                            texels.push(t);
-                        }
-                    }
-                }
-            }
-        }
-        self.last_pointer = pointer;
-
-        // Rendern nur bei Änderungen
-        let rotating_now = self.rotating && response.dragged();
-        let ss = if self.antialias && !rotating_now { 2 } else { 1 };
-        let mut hl: Vec<u16> = highlight.iter().map(|&(x, y)| (y * SIZE + x) as u16 + 1).collect();
-        hl.sort_unstable();
-        let params = RenderParams {
-            cam: self.cam,
-            model,
-            vis,
-            highlight: hl,
-            width: (rect.width() * ppp).round().max(1.0) as usize,
-            height: (rect.height() * ppp).round().max(1.0) as usize,
-            supersample: ss,
-            ghosts: self.ghosts,
-        };
-        let changed = self.last_params.as_ref() != Some(&params) || self.last_skin.as_ref() != Some(skin);
-        if changed {
-            let out = render(skin, &params);
-            let img = ColorImage::from_rgba_premultiplied([out.width, out.height], &out.rgba);
-            match &mut self.tex {
-                Some(t) => t.set(img, TextureOptions::NEAREST),
-                None => self.tex = Some(ui.ctx().load_texture("preview3d", img, TextureOptions::NEAREST)),
-            }
-            self.pick = out.pick;
-            self.pick_size = (out.width, out.height);
-            self.last_params = Some(params);
-            self.last_skin = Some(skin.clone());
-        }
-
         let painter = ui.painter_at(rect);
         // weicher Bodenschatten
         let ground = rect.center_bottom() - egui::vec2(0.0, rect.height() * 0.08);
@@ -179,8 +178,67 @@ impl Preview {
                 Color32::from_black_alpha(18),
             ));
         }
-        if let Some(t) = &self.tex {
-            painter.image(t.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+
+        if gpu {
+            // Skin-Textur nur bei Änderung neu hochladen
+            if self.skin_tex_src.as_ref() != Some(skin) || self.skin_tex.is_none() {
+                let img = ColorImage::from_rgba_unmultiplied([SIZE, SIZE], &skin.as_bytes());
+                match &mut self.skin_tex {
+                    Some(t) => t.set(img, TextureOptions::NEAREST),
+                    None => self.skin_tex = Some(ui.ctx().load_texture("preview_skin", img, TextureOptions::NEAREST)),
+                }
+                self.skin_tex_src = Some(skin.clone());
+            }
+            let view = View::new(self.cam, wpx, hpx);
+            let geo = gpu3d::build_geometry(model, &vis, &view, self.ghosts);
+            if let Some(t) = &self.skin_tex {
+                painter.add(egui::Shape::Callback(gpu3d::paint_callback(rect, geo, t.id(), self.grid)));
+            }
+            // Pinsel-Vorschau als helle Vierecke über dem Modell
+            let to_pt = |(x, y): (f32, f32)| rect.min + egui::vec2(x / ppp, y / ppp);
+            for &(x, y) in highlight {
+                if let Some(q) = gpu3d::texel_quad(skin, model, &vis, &view, x, y, self.ghosts) {
+                    let pts: Vec<egui::Pos2> = q.iter().map(|&p| to_pt(p)).collect();
+                    painter.add(egui::Shape::convex_polygon(
+                        pts,
+                        Color32::from_white_alpha(110),
+                        Stroke::new(1.0, Color32::from_white_alpha(220)),
+                    ));
+                }
+            }
+        } else {
+            // Software-Renderer: nur bei Änderungen neu berechnen
+            let rotating_now = self.rotating && response.dragged();
+            let ss = if self.antialias && !rotating_now && !self.painting { 2 } else { 1 };
+            let mut hl: Vec<u16> = highlight.iter().map(|&(x, y)| (y * SIZE + x) as u16 + 1).collect();
+            hl.sort_unstable();
+            let params = RenderParams {
+                cam: self.cam,
+                model,
+                vis,
+                highlight: hl,
+                width: wpx as usize,
+                height: hpx as usize,
+                supersample: ss,
+                ghosts: self.ghosts,
+                grid: self.grid,
+            };
+            let changed = self.last_params.as_ref() != Some(&params) || self.last_skin.as_ref() != Some(skin);
+            if changed {
+                let out = render(skin, &params);
+                let img = ColorImage::from_rgba_premultiplied([out.width, out.height], &out.rgba);
+                match &mut self.tex {
+                    Some(t) => t.set(img, TextureOptions::NEAREST),
+                    None => self.tex = Some(ui.ctx().load_texture("preview3d", img, TextureOptions::NEAREST)),
+                }
+                self.pick = out.pick;
+                self.pick_size = (out.width, out.height);
+                self.last_params = Some(params);
+                self.last_skin = Some(skin.clone());
+            }
+            if let Some(t) = &self.tex {
+                painter.image(t.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            }
         }
 
         let cursor = if self.rotating {
@@ -197,8 +255,17 @@ impl Preview {
 
     /// Rendert ein großes Vorschaubild (z. B. zum Exportieren).
     pub fn render_image(&self, skin: &Skin, model: Model, vis: Visibility, w: usize, h: usize) -> Vec<u8> {
-        let params =
-            RenderParams { cam: self.cam, model, vis, highlight: vec![], width: w, height: h, supersample: 3, ghosts: false };
+        let params = RenderParams {
+            cam: self.cam,
+            model,
+            vis,
+            highlight: vec![],
+            width: w,
+            height: h,
+            supersample: 3,
+            ghosts: false,
+            grid: false,
+        };
         let out = render(skin, &params);
         // vormultipliziert -> normal
         let mut rgba = out.rgba;

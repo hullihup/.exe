@@ -42,6 +42,8 @@ pub struct RenderParams {
     pub supersample: usize,
     /// Durchsichtige Pixel leicht andeuten und anklickbar machen (zum Malen)
     pub ghosts: bool,
+    /// Pixelraster auf dem Modell
+    pub grid: bool,
 }
 
 pub struct RenderOut {
@@ -205,6 +207,16 @@ pub fn render(skin: &Skin, p: &RenderParams) -> RenderOut {
                             c[1] as f32 / 255.0 * bright,
                             c[2] as f32 / 255.0 * bright,
                         ];
+                        if p.grid {
+                            let gs = (s * fw as f32).fract();
+                            let gv = (v * fh as f32).fract();
+                            let edge = 0.07;
+                            if gs < edge || gs > 1.0 - edge || gv < edge || gv > 1.0 - edge {
+                                for ch in &mut rgb {
+                                    *ch *= 0.55;
+                                }
+                            }
+                        }
                         if p.highlight.contains(&tid) {
                             for ch in &mut rgb {
                                 *ch = *ch * 0.45 + 0.55;
@@ -275,4 +287,31 @@ pub fn render(skin: &Skin, p: &RenderParams) -> RenderOut {
 #[inline]
 fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    #[test]
+    fn timing() {
+        let skin = crate::skin::starter_skin();
+        for (w, h, ss) in [(1000usize, 850usize, 2usize), (1000, 850, 1), (1600, 1200, 2)] {
+            let p = RenderParams {
+                cam: Camera::default(),
+                model: Model::Classic,
+                vis: Visibility::default(),
+                highlight: vec![],
+                width: w,
+                height: h,
+                supersample: ss,
+                ghosts: true,
+                grid: true,
+            };
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                std::hint::black_box(render(&skin, &p));
+            }
+            eprintln!("{w}x{h} ss{ss}: {:.1} ms", t.elapsed().as_secs_f64() * 100.0);
+        }
+    }
 }

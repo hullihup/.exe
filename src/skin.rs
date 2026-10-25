@@ -1,5 +1,6 @@
 //! Minecraft-Skin-Datenmodell: Pixel, Körperteile, UV-Layout, Laden/Speichern.
 
+use crate::i18n::{t, t1, t2};
 use std::sync::OnceLock;
 
 pub const SIZE: usize = 64;
@@ -21,8 +22,8 @@ pub enum Model {
 impl Model {
     pub fn name(self) -> &'static str {
         match self {
-            Model::Classic => "Classic (Steve, 4px)",
-            Model::Slim => "Slim (Alex, 3px)",
+            Model::Classic => t("Classic (Steve, 4px)"),
+            Model::Slim => t("Slim (Alex, 3px)"),
         }
     }
     fn idx(self) -> usize {
@@ -57,12 +58,12 @@ impl Part {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Part::Head => "Kopf",
-            Part::Body => "Körper",
-            Part::RightArm => "Rechter Arm",
-            Part::LeftArm => "Linker Arm",
-            Part::RightLeg => "Rechtes Bein",
-            Part::LeftLeg => "Linkes Bein",
+            Part::Head => t("Kopf"),
+            Part::Body => t("Körper"),
+            Part::RightArm => t("Rechter Arm"),
+            Part::LeftArm => t("Linker Arm"),
+            Part::RightLeg => t("Rechtes Bein"),
+            Part::LeftLeg => t("Linkes Bein"),
         }
     }
     pub fn mirror(self) -> Part {
@@ -88,8 +89,8 @@ impl Layer {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Layer::Base => "1. Ebene",
-            Layer::Overlay => "2. Ebene",
+            Layer::Base => t("1. Ebene"),
+            Layer::Overlay => t("2. Ebene"),
         }
     }
 }
@@ -110,12 +111,12 @@ impl Face {
     pub const ALL: [Face; 6] = [Face::Top, Face::Bottom, Face::Right, Face::Front, Face::Left, Face::Back];
     pub fn name(self) -> &'static str {
         match self {
-            Face::Top => "oben",
-            Face::Bottom => "unten",
-            Face::Right => "rechts",
-            Face::Front => "vorne",
-            Face::Left => "links",
-            Face::Back => "hinten",
+            Face::Top => t("oben"),
+            Face::Bottom => t("unten"),
+            Face::Right => t("rechts"),
+            Face::Front => t("vorne"),
+            Face::Left => t("links"),
+            Face::Back => t("hinten"),
         }
     }
     pub fn mirror(self) -> Face {
@@ -285,9 +286,9 @@ impl Skin {
     pub fn from_png(bytes: &[u8]) -> Result<Skin, String> {
         let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
         dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = dec.read_info().map_err(|e| format!("Kein gültiges PNG: {e}"))?;
-        let mut buf = vec![0; reader.output_buffer_size().ok_or("Bild zu groß")?];
-        let info = reader.next_frame(&mut buf).map_err(|e| format!("PNG-Fehler: {e}"))?;
+        let mut reader = dec.read_info().map_err(|e| t1("Kein gültiges PNG: {0}", e))?;
+        let mut buf = vec![0; reader.output_buffer_size().ok_or(t("Bild zu groß"))?];
+        let info = reader.next_frame(&mut buf).map_err(|e| t1("PNG-Fehler: {0}", e))?;
         let (w, h) = (info.width as usize, info.height as usize);
         let channels = info.color_type.samples();
         let pixel = |x: usize, y: usize| -> Rgba {
@@ -300,9 +301,7 @@ impl Skin {
             }
         };
         if w < 64 || w % 64 != 0 || (h != w && h * 2 != w) {
-            return Err(format!(
-                "Das Bild hat {w}×{h} Pixel. Ein Minecraft-Skin muss 64×64 (oder alt 64×32) groß sein."
-            ));
+            return Err(t2("Das Bild hat {0}×{1} Pixel. Ein Minecraft-Skin muss 64×64 (oder alt 64×32) groß sein.", w, h));
         }
         // HD-Skins (128, 256 …) werden auf 64 px heruntergerechnet.
         let scale = w / 64;

@@ -2,12 +2,17 @@
 
 Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mixer** für Partnerlooks.
 
-**Download:** [`SkinStudio.exe`](SkinStudio.exe) herunterladen und doppelklicken – keine Installation nötig.
+**Download:** [`SkinStudio.exe`](SkinStudio.exe) herunterladen und doppelklicken. Beim ersten Start führt ein **Installations-Assistent** (Deutsch / English) durch die Installation. Danach findest du Skin Studio über die **Windows-Suche**, im **Startmenü** und unter **Einstellungen → Apps** (dort auch zum Deinstallieren). Wer nicht installieren möchte, wählt „Ohne Installation verwenden (portabel)“.
 
 > Windows zeigt bei unsignierten Programmen eventuell „Der Computer wurde durch Windows geschützt“ an.
 > Dann auf **Weitere Informationen → Trotzdem ausführen** klicken.
 
 ## Funktionen
+
+### 🌐 Sprachen, Tabs & Updates
+- Komplett auf **Deutsch** und **Englisch (US)**, umschaltbar auf der Startseite oder unter Hilfe
+- **Tabs** wie in Blockbench: mehrere Projekte gleichzeitig offen, ➕ für ein weiteres, ✖ zum Schließen (Strg+T / Strg+W)
+- **Update-Symbol** neben „Skin Studio“: grau = aktuell, **grün = Update verfügbar**. Ein Klick lädt die neue Version herunter und installiert sie, ohne dass du selbst eine neue exe herunterladen musst.
 
 ### 🏠 Startseite & Projekte
 - Beim Start erscheint eine Startseite. Dort startest du ein **neues Projekt** (Minecraft Skin Editor oder Skin-Mixer) oder machst mit dem **letzten Projekt** weiter.
@@ -21,7 +26,8 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - **Licht/Schatten**: hellt auf (Linksklick) oder dunkelt ab (Rechtsklick), auf Wunsch mit Farbton-Verschiebung wie in der Pixel-Art
 - **Spiegeln**: alles, was du malst, erscheint auch auf der anderen Körperseite
 - **Rückgängig / Wiederholen** (bis zu 300 Schritte)
-- **Die große 3D-Ansicht ist die Hauptansicht**: direkt auf dem Modell malen, mit der rechten Maustaste drehen
+- **Die große 3D-Ansicht ist die Hauptansicht**: direkt auf dem Modell malen, mit der rechten Maustaste drehen. Sie läuft auf der Grafikkarte (OpenGL) und ist dadurch flüssig, mit einem gut erkennbaren **Pixelraster** auf dem Modell.
+- Nach dem Farbe-Aufnehmen mit der **Pipette** geht es automatisch mit dem **Stift** weiter
 - **Körperteile ausblenden wie bei Skindex** (rechte Leiste): 1. und 2. Ebene sowie Kopf, Körper, Arme und Beine per Klick ausblenden, damit man an verdeckte Stellen kommt (Rechtsklick: nur dieses Teil zeigen)
 - Wegradierte Stellen bleiben anklickbar und lassen sich wieder bemalen
 - Die 2D-Textur ist standardmäßig eingeklappt und lässt sich über den Pfeil rechts ausklappen
@@ -38,7 +44,8 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Vorlagen: **Kopf A + Outfit B** (Partnerlook), Oberteil tauschen, Hose tauschen, Frisur oder Hut tauschen, Zufallsmix
 - **Smarte Hautton-Erkennung** (wahrnehmungsnaher Lab-Farbraum): erkennt die Hautfarbe samt aller Schattierungen am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen. Die 2. Ebene (Kleidung) wird dabei nie umgefärbt. Hat ein Skin kein erkennbares Gesicht (z. B. eine Maske), bleibt er unverändert.
 - Outfit-Farbvarianten (Farbton, Sättigung, Helligkeit oder per 🎲 zufällig)
-- Ergebnis im Editor weiterbearbeiten oder direkt exportieren
+- Ergebnis im Editor weiterbearbeiten: Änderungen dort werden **automatisch im Mixer übernommen**, auch wenn du danach die Mix-Einstellungen änderst
+- Oder das Ergebnis direkt exportieren
 
 ### ⬇ Export
 - Skin als 64×64-PNG (direkt in Minecraft verwendbar)
@@ -64,6 +71,14 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Das Fenster wird nur neu gezeichnet, wenn du etwas tust. Im Leerlauf braucht es praktisch keine CPU.
 - Die 3D-Vorschau wird nur bei Änderungen neu berechnet.
 - Eine einzelne Datei mit etwa 7 MB, ohne Installation und ohne Laufzeitumgebung.
+
+## Update-Server einrichten
+
+Das Update-Symbol liest `version.txt` und lädt `SkinStudio.exe` von
+`https://raw.githubusercontent.com/hullihup/.exe/main/` (siehe `UPDATE_BASE` in `src/updater.rs`).
+Damit das funktioniert, muss das Repository **öffentlich** sein, und beides muss auf dem Branch **`main`** liegen.
+Für ein neues Update: Versionsnummer in `Cargo.toml` erhöhen, neu bauen, `SkinStudio.exe` ersetzen,
+dieselbe Nummer in `version.txt` eintragen und auf `main` pushen.
 
 ## Selbst bauen
 

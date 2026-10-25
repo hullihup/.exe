@@ -141,11 +141,13 @@ impl Rng {
 
 /// Rausch-Variante einer Farbe (für den Rauschpinsel).
 pub fn noise_color(c: Rgba, rng: &mut Rng, amount: f32, levels: u32, hue_jitter: f32) -> Rgba {
-    let mut r = rng.f32() * 2.0 - 1.0;
-    if levels >= 2 {
+    // feste Helligkeitsstufen, alle gleich häufig → ruhiges, stimmiges Muster
+    let r = if levels >= 2 {
         let l = (levels - 1) as f32;
-        r = ((r + 1.0) * 0.5 * l).round() / l * 2.0 - 1.0;
-    }
+        rng.range(levels as usize) as f32 / l * 2.0 - 1.0
+    } else {
+        rng.f32() * 2.0 - 1.0
+    };
     let mut out = shift_light(c, r * amount, false);
     if hue_jitter > 0.0 {
         let mut hsv = to_hsv(out);
