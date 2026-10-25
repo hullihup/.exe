@@ -66,7 +66,7 @@ fn hide(_: &mut std::process::Command) {}
 
 /// Lädt eine URL mit dem in Windows eingebauten `curl.exe` (Windows 10/11),
 /// ersatzweise mit PowerShell. So braucht das Programm keinen eigenen HTTPS-Code.
-fn http_get(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
+pub fn http_get(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
     let mut cmd = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
     cmd.args(["-fsSL", "--max-time", "120", "-A", "SkinStudio-Updater"]);
     if let Some(p) = out {

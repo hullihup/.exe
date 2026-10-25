@@ -7,6 +7,7 @@ mod gpu3d;
 mod i18n;
 mod icon_gen;
 mod installer;
+mod mcskin;
 mod mixer;
 mod presets;
 mod preview;
@@ -58,8 +59,14 @@ struct NewDialog {
     name: String,
     start: StartWith,
     model: Model,
-    /// optional: eigener Skin als PNG
-    file: Option<(PathBuf, Skin, Model)>,
+    /// optional: eigener Skin (Bezeichnung, Skin, Modell) – aus einer PNG oder per Benutzername
+    file: Option<(String, Skin, Model)>,
+    /// vorgeschlagener Name (wird durch den Spielernamen ersetzt, solange er unverändert ist)
+    auto_name: String,
+    user: String,
+    user_edit: f64,
+    lookup: Option<(String, Arc<std::sync::Mutex<mcskin::Lookup>>)>,
+    thumb: Option<(String, egui::TextureHandle)>,
 }
 
 struct ProjectCard {
@@ -431,7 +438,18 @@ impl App {
 
     fn open_new_dialog(&mut self) {
         let existing = project::list();
-        self.new_dialog = Some(NewDialog { name: project::next_name(&existing), start: StartWith::Figure, model: Model::Classic, file: None });
+        let name = project::next_name(&existing);
+        self.new_dialog = Some(NewDialog {
+            auto_name: name.clone(),
+            name,
+            start: StartWith::Figure,
+            model: Model::Classic,
+            file: None,
+            user: String::new(),
+            user_edit: 0.0,
+            lookup: None,
+            thumb: None,
+        });
     }
 
     fn go_home(&mut self) {
@@ -1044,7 +1062,7 @@ impl App {
             let mut pick_err = None;
             let mut clear_file = false;
             let modal = egui::Modal::new(egui::Id::unique("new_project")).show(ctx, |ui| {
-                ui.set_width(400.0);
+                ui.set_width(440.0);
                 ui.heading(t("➕ Neues Projekt"));
                 ui.add_space(8.0);
                 ui.label(t("Name"));
@@ -1058,18 +1076,92 @@ impl App {
                     if ui.button(t("📂 PNG auswählen …")).clicked() {
                         if let Some(p) = Self::pick_png() {
                             match Self::read_skin(&p) {
-                                Ok((s, m)) => d.file = Some((p, s, m)),
+                                Ok((s, m)) => d.file = Some((Self::file_name(&p), s, m)),
                                 Err(e) => pick_err = Some(e),
                             }
                         }
                     }
-                    if let Some((p, _, _)) = &d.file {
-                        ui.label(RichText::new(Self::file_name(p)).strong().color(ORANGE));
-                        if ui.small_button("✖").on_hover_text(t("Datei entfernen")).clicked() {
-                            clear_file = true;
+                    ui.label(RichText::new(t("oder Benutzername:")).weak());
+                    let r = ui.add(egui::TextEdit::singleline(&mut d.user).hint_text(t("Minecraft-Name")).desired_width(f32::INFINITY));
+                    let now = ui.input(|i| i.time);
+                    if r.changed() {
+                        d.user_edit = now;
+                    }
+                    let name = d.user.trim().to_string();
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    let searched = d.lookup.as_ref().is_some_and(|(n, _)| n.eq_ignore_ascii_case(&name));
+                    if !name.is_empty() && !searched {
+                        // 3 Sekunden nach dem letzten Tippen (oder sofort mit Enter) suchen
+                        let wait = 3.0 - (now - d.user_edit);
+                        if enter || wait <= 0.0 {
+                            d.lookup = Some((name.clone(), mcskin::fetch_async(name, ui.ctx())));
+                        } else {
+                            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.05)));
                         }
                     }
                 });
+                // Ergebnis der Spielersuche
+                let state = d.lookup.as_ref().and_then(|(n, st)| st.lock().ok().map(|g| (n.clone(), g.clone())));
+                match state {
+                    Some((n, mcskin::Lookup::Loading)) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t1("Suche „{0}“ …", n));
+                        });
+                    }
+                    Some((_, mcskin::Lookup::Failed(e))) => {
+                        ui.label(RichText::new(e).color(ORANGE));
+                    }
+                    Some((_, mcskin::Lookup::Found { name, skin, model })) => {
+                        if d.thumb.as_ref().is_none_or(|(n, _)| *n != name) {
+                            let params = render3d::RenderParams {
+                                cam: render3d::Camera { yaw: -0.5, pitch: 0.15, zoom: 1.0 },
+                                model,
+                                vis: Default::default(),
+                                highlight: vec![],
+                                width: 96,
+                                height: 120,
+                                supersample: 2,
+                                ghosts: false,
+                                grid: false,
+                            };
+                            let out = render3d::render(&skin, &params);
+                            let img = egui::ColorImage::from_rgba_premultiplied([out.width, out.height], &out.rgba);
+                            d.thumb = Some((name.clone(), ui.ctx().load_texture("player_skin", img, egui::TextureOptions::LINEAR)));
+                            // gefundenen Skin direkt übernehmen
+                            d.file = Some((name.clone(), skin.clone(), model));
+                            if d.name == d.auto_name {
+                                d.name = name.clone();
+                                d.auto_name = name.clone();
+                            }
+                        }
+                        let used = d.file.as_ref().is_some_and(|(l, _, _)| *l == name);
+                        ui.horizontal(|ui| {
+                            if let Some((_, tex)) = &d.thumb {
+                                ui.add(egui::Image::new((tex.id(), egui::vec2(88.0, 110.0))));
+                            }
+                            ui.vertical(|ui| {
+                                ui.add_space(10.0);
+                                ui.label(RichText::new(&name).strong().size(16.0));
+                                ui.label(RichText::new(t1("Aktueller Skin · {0}", model.name())).small().weak());
+                                if used {
+                                    ui.label(RichText::new(t("✔ wird für das Projekt verwendet")).small().color(ORANGE));
+                                } else if ui.button(t("Diesen Skin verwenden")).clicked() {
+                                    d.file = Some((name.clone(), skin.clone(), model));
+                                }
+                            });
+                        });
+                    }
+                    None => {}
+                }
+                if let Some((label, _, _)) = &d.file {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(t1("Skin: {0}", label)).strong().color(ORANGE));
+                        if ui.small_button("✖").on_hover_text(t("Skin entfernen")).clicked() {
+                            clear_file = true;
+                        }
+                    });
+                }
                 if d.file.is_none() {
                     ui.label(RichText::new(t("Ohne Datei startest du mit:")).small().weak());
                     ui.horizontal(|ui| {

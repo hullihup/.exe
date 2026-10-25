@@ -109,6 +109,8 @@ mod tests {
             include_str!("project.rs"),
             include_str!("installer.rs"),
             include_str!("updater.rs"),
+            include_str!("mcskin.rs"),
+            include_str!("presets.rs"),
         ];
         let table = super::table();
         let mut missing = Vec::new();
