@@ -72,7 +72,7 @@ impl Tool {
             Tool::Noise => t("Malt die Farbe in zufälligen Helligkeiten – für lebendige Flächen."),
             Tool::Shade => t("Links aufhellen, rechts abdunkeln. Ideal für Falten und Schatten."),
             Tool::Bucket => t("Füllt zusammenhängende, ähnliche Pixel."),
-            Tool::Replace => t("Ersetzt eine Farbe überall auf dem Skin."),
+            Tool::Replace => t("Erst die alte Farbe im Skin anklicken, dann die neue Farbe – überall wird getauscht."),
             Tool::Line => t("Ziehen für eine gerade Linie (nur in der 2D-Ansicht)."),
             Tool::Rect => t("Ziehen für ein Rechteck (nur in der 2D-Ansicht)."),
             Tool::Picker => t("Nimmt eine Farbe auf. Tipp: Alt + Klick geht mit jedem Werkzeug."),
@@ -133,6 +133,8 @@ pub struct Editor {
     pub tolerance: f32,
     pub fill_limit: FillLimit,
     pub fill_noise: bool,
+    /// Ersetzen: zuerst angeklickte (alte) Farbe
+    replace_from: Option<Rgba>,
     pub rect_fill: bool,
     pub mirror: bool,
 
@@ -230,6 +232,7 @@ impl Editor {
             tolerance: 0.0,
             fill_limit: FillLimit::Face,
             fill_noise: false,
+            replace_from: None,
             rect_fill: false,
             mirror: false,
             primary: [30, 90, 170, 255],
@@ -639,18 +642,52 @@ impl Editor {
         }
     }
 
-    fn replace_color(&mut self, x: i32, y: i32, secondary: bool) {
-        let target = self.skin.get(x as usize, y as usize);
+    /// Ersetzen in zwei Schritten: 1. Klick = alte Farbe, 2. Klick = neue Farbe.
+    fn replace_color(&mut self, x: i32, y: i32, _secondary: bool) {
+        if x < 0 || y < 0 || x >= SIZE as i32 || y >= SIZE as i32 {
+            return;
+        }
+        let clicked = self.skin.get(x as usize, y as usize);
+        match self.replace_from {
+            None => self.replace_from = Some(clicked),
+            Some(from) => {
+                if !color::similar(clicked, from, 0.0) {
+                    self.replace_all(from, clicked);
+                }
+                self.replace_from = None;
+            }
+        }
+    }
+
+    /// Alle (ähnlichen) Pixel der Farbe `from` durch `to` ersetzen.
+    fn replace_all(&mut self, from: Rgba, to: Rgba) {
         let map = skin::texel_map(self.model);
         for idx in 0..SIZE * SIZE {
             if map[idx].is_some()
                 && self.texel_visible(idx % SIZE, idx / SIZE)
-                && color::similar(self.skin.px[idx], target, self.tolerance)
+                && color::similar(self.skin.px[idx], from, self.tolerance)
             {
-                let c = self.fill_color(secondary);
+                let c = if self.fill_noise {
+                    color::noise_color(to, &mut self.rng, self.noise_amount, self.noise_levels, self.noise_hue)
+                } else {
+                    to
+                };
                 self.skin.px[idx] = c;
             }
         }
+    }
+
+    /// Pixel, die beim Ersetzen getauscht würden (zum Hervorheben).
+    pub fn replace_matches(&self) -> Vec<(usize, usize)> {
+        let Some(from) = self.replace_from else { return vec![] };
+        let map = skin::texel_map(self.model);
+        (0..SIZE * SIZE)
+            .filter(|&idx| {
+                map[idx].is_some() && self.texel_visible(idx % SIZE, idx / SIZE) && color::similar(self.skin.px[idx], from, self.tolerance)
+            })
+            .map(|idx| (idx % SIZE, idx / SIZE))
+            .take(700)
+            .collect()
     }
 
     fn pick_color(&mut self, x: i32, y: i32, secondary: bool) {
@@ -826,6 +863,9 @@ impl Editor {
                     .on_hover_text(t("Lichter werden etwas wärmer, Schatten etwas kühler – wirkt natürlicher."));
             }
             Tool::Bucket | Tool::Replace => {
+                if self.tool == Tool::Replace {
+                    self.replace_options(ui);
+                }
                 ui.horizontal(|ui| {
                     ui.label(t("Toleranz"));
                     ui.add(egui::Slider::new(&mut self.tolerance, 0.0..=100.0).suffix(" %"));
@@ -878,6 +918,47 @@ impl Editor {
         {
             self.import_requested = true;
         }
+    }
+
+    fn replace_options(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("1. Alte Farbe:")).strong());
+                match self.replace_from {
+                    Some(c) => {
+                        swatch(ui, c, egui::vec2(28.0, 18.0), false);
+                        if ui.small_button(t("✖ neu wählen")).clicked() {
+                            self.replace_from = None;
+                        }
+                    }
+                    None => {
+                        ui.label(RichText::new(t("im Skin anklicken")).weak());
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("2. Neue Farbe:")).strong());
+                ui.label(RichText::new(if self.replace_from.is_some() { t("jetzt im Skin anklicken") } else { t("danach anklicken") }).weak());
+            });
+            if let Some(from) = self.replace_from {
+                let n = self.replace_matches().len();
+                ui.label(RichText::new(crate::i18n::t1("{0} Pixel werden getauscht (orange markiert)", n)).small().color(Color32::from_rgb(255, 170, 60)));
+                ui.horizontal(|ui| {
+                    ui.label(t("oder:"));
+                    let to = self.primary;
+                    if ui.add(egui::Button::new(t("Mit Hauptfarbe ersetzen"))).clicked() {
+                        let before = self.skin.clone();
+                        self.replace_all(from, to);
+                        self.replace_from = None;
+                        if self.skin != before {
+                            self.push_undo(before, self.model);
+                        }
+                    }
+                    swatch(ui, to, egui::vec2(18.0, 18.0), false);
+                });
+            }
+        });
     }
 
     fn noise_options(&mut self, ui: &mut egui::Ui) {
@@ -1128,6 +1209,9 @@ impl Editor {
         let mut highlight = self.hover_footprint(self.hover2d.or(self.hover3d));
         if self.stroke.is_some() {
             highlight.clear();
+        }
+        if self.tool == Tool::Replace {
+            highlight.extend(self.replace_matches());
         }
         let alt = ui.input(|i| i.modifiers.alt);
         let paint_enabled = self.tool.paints_in_3d() || alt;
@@ -1407,6 +1491,13 @@ impl Editor {
                     let col = if is_hover { Color32::from_rgb(120, 180, 255) } else { base_col };
                     painter.rect_stroke(r, 0.0, Stroke::new(if is_hover { 1.5 } else { 1.0 }, col), StrokeKind::Inside);
                 }
+            }
+        }
+
+        // Ersetzen: Pixel der alten Farbe markieren
+        if self.tool == Tool::Replace {
+            for (x, y) in self.replace_matches() {
+                painter.rect_stroke(texel_rect(x as i32, y as i32), 0.0, Stroke::new(1.5, Color32::from_rgb(255, 170, 60)), StrokeKind::Inside);
             }
         }
 

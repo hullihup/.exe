@@ -23,12 +23,17 @@ pub struct StoredProject {
 
 /// Ordner für alle Programmdaten (Windows: %APPDATA%\SkinStudio).
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = var("APPDATA")
+        .or_else(|| var("XDG_DATA_HOME"))
+        .or_else(|| var("HOME").map(|h| h.join(".local").join("share")))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("SkinStudio")
+}
+
+/// Ordner eines Projekts
+pub fn dir(id: &str) -> PathBuf {
+    projects_dir().join(id)
 }
 
 fn projects_dir() -> PathBuf {

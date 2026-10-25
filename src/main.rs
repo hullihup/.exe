@@ -8,6 +8,7 @@ mod i18n;
 mod icon_gen;
 mod installer;
 mod mixer;
+mod presets;
 mod preview;
 mod project;
 mod render3d;
@@ -22,7 +23,7 @@ use eframe::egui::{self, Color32, Key, Modifiers, Rect, RichText, Sense, Stroke,
 
 use editor::{detect_model, Editor};
 use i18n::{t, t1, t2, Lang};
-use mixer::{MixLink, Mixer, MixerAction};
+use mixer::{Mixer, MixerAction};
 use project::ProjectMeta;
 use skin::{Layer, Model, Skin};
 use updater::{State as UpdateState, Updater};
@@ -51,13 +52,14 @@ enum Pending {
 enum StartWith {
     Figure,
     Blank,
-    File,
 }
 
 struct NewDialog {
     name: String,
     start: StartWith,
     model: Model,
+    /// optional: eigener Skin als PNG
+    file: Option<(PathBuf, Skin, Model)>,
 }
 
 struct ProjectCard {
@@ -66,7 +68,7 @@ struct ProjectCard {
 }
 
 /// Ein offenes Projekt in einem Tab (inaktive Tabs liegen hier, der aktive in `App`).
-type TabData = (ProjectMeta, Editor);
+type TabData = (ProjectMeta, Editor, Mixer);
 
 struct App {
     screen: Screen,
@@ -76,6 +78,7 @@ struct App {
     /// alle Tabs; an der Stelle `active` steht `None` (das liegt in `editor`/`project`)
     tabs: Vec<Option<TabData>>,
     active: usize,
+    /// Skin-Mixer des aktiven Projekts
     mixer: Mixer,
     cards: Option<Vec<ProjectCard>>,
     new_dialog: Option<NewDialog>,
@@ -130,8 +133,8 @@ impl App {
                 // Programmzeit beginnt bei 0 → Meldung die ersten 5 Sekunden zeigen
                 app.toast = Some((e, 5.0, true));
             }
-        } else if args.len() > 1 {
-            for p in &args {
+        } else if args.len() > 1 && app.project_from_file(&args[0]).is_ok() {
+            for p in &args[1..] {
                 if let Ok((s, m)) = Self::read_skin(p) {
                     app.mixer.set_slot(None, s, m, Self::file_stem(p));
                 }
@@ -204,7 +207,8 @@ impl App {
     }
 
     fn export_mix(&mut self, ctx: &egui::Context) {
-        if let Some(p) = Self::save_png_dialog("partnerlook_skin.png", t("Gemixten Skin exportieren")) {
+        let name = self.project.as_ref().map(|p| format!("{}_mix", p.name)).unwrap_or_else(|| "mix".into());
+        if let Some(p) = Self::save_png_dialog(&Self::safe_file_name(&name), t("Gemixten Skin exportieren")) {
             let data = self.mixer.result.to_png();
             self.write_file(ctx, &p, &data);
         }
@@ -250,37 +254,30 @@ impl App {
         if self.project.as_ref().is_some_and(|p| p.id == id) {
             return Some(self.active);
         }
-        self.tabs.iter().position(|t| t.as_ref().is_some_and(|(m, _)| m.id == id))
+        self.tabs.iter().position(|t| t.as_ref().is_some_and(|(m, _, _)| m.id == id))
     }
 
     fn tab_meta(&self, i: usize) -> Option<&ProjectMeta> {
-        if i == self.active { self.project.as_ref() } else { self.tabs.get(i)?.as_ref().map(|(m, _)| m) }
+        if i == self.active { self.project.as_ref() } else { self.tabs.get(i)?.as_ref().map(|(m, _, _)| m) }
     }
 
     fn tab_modified(&self, i: usize) -> bool {
         if i == self.active {
-            self.project.is_some() && self.editor.modified
+            self.project.is_some() && (self.editor.modified || self.mixer.changed)
         } else {
-            self.tabs.get(i).and_then(|t| t.as_ref()).is_some_and(|(_, e)| e.modified)
+            self.tabs.get(i).and_then(|t| t.as_ref()).is_some_and(|(_, e, m)| e.modified || m.changed)
         }
-    }
-
-    /// Skin eines offenen Projekts (aktiv oder im Hintergrund)
-    fn project_skin(&self, id: &str) -> Option<&Skin> {
-        if self.project.as_ref().is_some_and(|p| p.id == id) {
-            return Some(&self.editor.skin);
-        }
-        self.tabs.iter().flatten().find(|(m, _)| m.id == id).map(|(_, e)| &e.skin)
     }
 
     fn switch_tab(&mut self, i: usize) {
         if i >= self.tabs.len() || i == self.active || self.project.is_none() {
             return;
         }
-        let Some((meta, ed)) = self.tabs[i].take() else { return };
+        let Some((meta, ed, mx)) = self.tabs[i].take() else { return };
         let old_meta = self.project.replace(meta).unwrap();
         let old_editor = std::mem::replace(&mut self.editor, ed);
-        self.tabs[self.active] = Some((old_meta, old_editor));
+        let old_mixer = std::mem::replace(&mut self.mixer, mx);
+        self.tabs[self.active] = Some((old_meta, old_editor, old_mixer));
         self.active = i;
         if let Some(p) = &self.project {
             project::set_last(&p.id);
@@ -294,15 +291,19 @@ impl App {
             return;
         }
         let mut ed = self.editor.fresh_from();
+        let mut mx = Mixer::load_from(&project::dir(&meta.id)).unwrap_or_else(Mixer::new);
+        mx.ensure_project_slot(&skin, meta.model);
         ed.open_fresh(skin, meta.model);
         project::set_last(&meta.id);
         if let Some(old_meta) = self.project.take() {
             let old_editor = std::mem::replace(&mut self.editor, ed);
-            self.tabs[self.active] = Some((old_meta, old_editor));
+            let old_mixer = std::mem::replace(&mut self.mixer, mx);
+            self.tabs[self.active] = Some((old_meta, old_editor, old_mixer));
             self.tabs.push(None);
             self.active = self.tabs.len() - 1;
         } else {
             self.editor = ed;
+            self.mixer = mx;
             self.tabs = vec![None];
             self.active = 0;
         }
@@ -319,16 +320,18 @@ impl App {
             if self.tabs.is_empty() {
                 self.project = None;
                 self.editor = self.editor.fresh_from();
+                self.mixer = Mixer::new();
                 self.active = 0;
-                if self.screen == Screen::Editor {
+                if self.screen != Screen::Start {
                     self.screen = Screen::Start;
                 }
                 self.cards = None;
             } else {
                 let next = i.min(self.tabs.len() - 1);
-                let (meta, ed) = self.tabs[next].take().unwrap();
+                let (meta, ed, mx) = self.tabs[next].take().unwrap();
                 self.project = Some(meta);
                 self.editor = ed;
+                self.mixer = mx;
                 self.active = next;
             }
         } else {
@@ -375,17 +378,21 @@ impl App {
         }
     }
 
-    fn save_pair(meta: &mut ProjectMeta, editor: &mut Editor) -> Result<(), String> {
+    fn save_pair(meta: &mut ProjectMeta, editor: &mut Editor, mixer: &mut Mixer) -> Result<(), String> {
         meta.model = editor.model;
         meta.modified = project::now();
         project::save(meta, &editor.skin)?;
         editor.modified = false;
+        if mixer.changed || mixer.applied_base.is_some() || !mixer.slots.is_empty() {
+            mixer.save_to(&project::dir(&meta.id)).map_err(|e| t1("Speichern fehlgeschlagen: {0}", e))?;
+        }
+        mixer.changed = false;
         Ok(())
     }
 
     fn save_project(&mut self, ctx: &egui::Context) -> bool {
         let Some(meta) = &mut self.project else { return true };
-        match Self::save_pair(meta, &mut self.editor) {
+        match Self::save_pair(meta, &mut self.editor, &mut self.mixer) {
             Ok(_) => {
                 let name = meta.name.clone();
                 self.cards = None;
@@ -403,12 +410,12 @@ impl App {
     /// Alle geänderten Tabs speichern.
     fn save_all(&mut self, ctx: &egui::Context) -> bool {
         let mut ok = true;
-        if self.project.is_some() && self.editor.modified {
+        if self.tab_modified(self.active) {
             ok &= self.save_project(ctx);
         }
-        for (meta, ed) in self.tabs.iter_mut().flatten() {
-            if ed.modified {
-                if let Err(e) = Self::save_pair(meta, ed) {
+        for (meta, ed, mx) in self.tabs.iter_mut().flatten() {
+            if ed.modified || mx.changed {
+                if let Err(e) = Self::save_pair(meta, ed, mx) {
                     ok = false;
                     self.toast = Some((e, ctx.input(|i| i.time) + 5.0, true));
                 }
@@ -420,6 +427,11 @@ impl App {
 
     fn unsaved_count(&self) -> usize {
         (0..self.tabs.len()).filter(|&i| self.tab_modified(i)).count()
+    }
+
+    fn open_new_dialog(&mut self) {
+        let existing = project::list();
+        self.new_dialog = Some(NewDialog { name: project::next_name(&existing), start: StartWith::Figure, model: Model::Classic, file: None });
     }
 
     fn go_home(&mut self) {
@@ -661,30 +673,20 @@ impl App {
 
                     // Neues Projekt
                     section(ui, t("NEUES PROJEKT"));
-                    let cw = (width - 2.0 * 14.0) / 3.0;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 14.0;
-                        if big_card(ui, cw, "🎨", t("Minecraft Skin Editor"), t("Skins Pixel für Pixel gestalten – mit 3D-Ansicht, Rauschpinsel und mehr."), true).clicked() {
-                            let existing = project::list();
-                            self.new_dialog =
-                                Some(NewDialog { name: project::next_name(&existing), start: StartWith::Figure, model: Model::Classic });
-                        }
-                        if big_card(ui, cw, "👫", t("Skin-Mixer"), t("Skins kombinieren – z. B. dein Kopf mit einem anderen Outfit für den Partnerlook."), true).clicked() {
-                            self.screen = Screen::Mixer;
-                        }
-                        big_card(ui, cw, "✨", t("Bald mehr …"), t("Weitere Editoren kommen in zukünftigen Versionen."), false);
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(t("📂  PNG-Skin importieren …")).on_hover_text(t("Erstellt aus einer Skin-Datei ein neues Projekt")).clicked() {
-                            if let Some(p) = Self::pick_png() {
-                                if let Err(e) = self.project_from_file(&p) {
-                                    self.notify(&ctx, e, true);
-                                }
-                            }
-                        }
-                        ui.label(RichText::new(t("oder PNG-Datei einfach ins Fenster ziehen")).small().weak());
-                    });
+                    if big_card(
+                        ui,
+                        width,
+                        "➕",
+                        t("Neues Projekt"),
+                        t("Name eingeben und optional deinen Skin (.png) hinzufügen. Jedes Projekt hat Editor und Skin-Mixer mit Outfit-Vorlagen – oben einfach umschalten."),
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.open_new_dialog();
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(t("oder PNG-Datei einfach ins Fenster ziehen")).small().weak());
 
                     // Meine Projekte
                     ui.add_space(20.0);
@@ -768,7 +770,7 @@ impl App {
                 let Some(meta) = self.tab_meta(i) else { continue };
                 let name = elide(&meta.name, 22);
                 let modified = self.tab_modified(i);
-                let active = i == self.active && self.screen == Screen::Editor;
+                let active = i == self.active && self.screen != Screen::Start;
                 let fill = if active { Color32::from_rgb(52, 56, 66) } else { Color32::from_rgb(38, 41, 48) };
                 let frame = egui::Frame::NONE
                     .fill(fill)
@@ -811,7 +813,9 @@ impl App {
             self.request_close_tab(i);
         } else if let Some(i) = switch {
             self.switch_tab(i);
-            self.screen = Screen::Editor;
+            if self.screen == Screen::Start {
+                self.screen = Screen::Editor;
+            }
         }
     }
 
@@ -932,7 +936,11 @@ impl App {
             {
                 self.screen = Screen::Editor;
             }
-            if ui.add(egui::Button::selectable(self.screen == Screen::Mixer, RichText::new(t("👫  Skin-Mixer")).size(14.0))).clicked() {
+            if ui
+                .add_enabled(has_project, egui::Button::selectable(self.screen == Screen::Mixer, RichText::new(t("👫  Skin-Mixer")).size(14.0)))
+                .on_disabled_hover_text(t("Erst ein Projekt öffnen oder erstellen"))
+                .clicked()
+            {
                 self.screen = Screen::Mixer;
             }
 
@@ -944,9 +952,10 @@ impl App {
                     self.action_export(&ctx);
                 }
                 if self.project.is_some() {
-                    let label = if self.editor.modified { t("💾  Speichern •") } else { t("💾  Gespeichert") };
+                    let modified = self.tab_modified(self.active);
+                    let label = if modified { t("💾  Speichern •") } else { t("💾  Gespeichert") };
                     if ui
-                        .add_enabled(self.editor.modified, egui::Button::new(label).min_size(egui::vec2(120.0, 26.0)))
+                        .add_enabled(modified, egui::Button::new(label).min_size(egui::vec2(120.0, 26.0)))
                         .on_hover_text(t("Projekt im Programm speichern (Strg+S)"))
                         .clicked()
                     {
@@ -983,7 +992,7 @@ impl App {
                 });
             }
             Screen::Mixer => {
-                ui.label(t("Skin-Mixer – kombiniere Skins zu einem neuen."));
+                ui.label(t("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. „Ins Projekt übernehmen“ speichert den Mix als Projekt-Skin."));
             }
             Screen::Start => {
                 ui.label(RichText::new(t("Deine Projekte werden im Programm gespeichert – du musst keine Dateien verwalten.")).weak());
@@ -1032,28 +1041,43 @@ impl App {
         // Neues Projekt
         if let Some(mut d) = self.new_dialog.take() {
             let mut result: Option<bool> = None;
+            let mut pick_err = None;
+            let mut clear_file = false;
             let modal = egui::Modal::new(egui::Id::unique("new_project")).show(ctx, |ui| {
                 ui.set_width(400.0);
-                ui.heading(t("🎨 Neues Skin-Projekt"));
+                ui.heading(t("➕ Neues Projekt"));
                 ui.add_space(8.0);
                 ui.label(t("Name"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     result = Some(true);
                 }
-                ui.add_space(8.0);
-                ui.label(t("Starten mit"));
+                ui.add_space(10.0);
+                ui.label(t("Dein Skin (optional)"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.start, StartWith::Figure, t("👤 Start-Figur"));
-                    ui.selectable_value(&mut d.start, StartWith::Blank, t("⬜ Leer"));
-                    ui.selectable_value(&mut d.start, StartWith::File, t("📂 PNG-Datei …"));
+                    if ui.button(t("📂 PNG auswählen …")).clicked() {
+                        if let Some(p) = Self::pick_png() {
+                            match Self::read_skin(&p) {
+                                Ok((s, m)) => d.file = Some((p, s, m)),
+                                Err(e) => pick_err = Some(e),
+                            }
+                        }
+                    }
+                    if let Some((p, _, _)) = &d.file {
+                        ui.label(RichText::new(Self::file_name(p)).strong().color(ORANGE));
+                        if ui.small_button("✖").on_hover_text(t("Datei entfernen")).clicked() {
+                            clear_file = true;
+                        }
+                    }
                 });
-                if d.start != StartWith::File {
-                    ui.add_space(6.0);
-                    ui.label(t("Modell"));
+                if d.file.is_none() {
+                    ui.label(RichText::new(t("Ohne Datei startest du mit:")).small().weak());
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut d.model, Model::Classic, t("Classic (4 px Arme)"));
-                        ui.selectable_value(&mut d.model, Model::Slim, t("Slim (3 px Arme)"));
+                        ui.selectable_value(&mut d.start, StartWith::Figure, t("👤 Start-Figur"));
+                        ui.selectable_value(&mut d.start, StartWith::Blank, t("⬜ Leer"));
+                        ui.separator();
+                        ui.selectable_value(&mut d.model, Model::Classic, t("Classic"));
+                        ui.selectable_value(&mut d.model, Model::Slim, t("Slim"));
                     });
                 }
                 ui.add_space(12.0);
@@ -1067,23 +1091,26 @@ impl App {
                     }
                 });
             });
+            if let Some(e) = pick_err {
+                self.notify(ctx, e, true);
+            }
+            if clear_file {
+                d.file = None;
+            }
             if modal.should_close() && result.is_none() {
                 result = Some(false);
             }
             match result {
                 Some(true) => {
                     let name = if d.name.trim().is_empty() { t("Mein Skin").to_string() } else { d.name.trim().to_string() };
-                    let res = match d.start {
-                        StartWith::Figure => {
+                    let res = match (d.file.take(), d.start) {
+                        (Some((_, s, m)), _) => self.create_project(name, s, m),
+                        (None, StartWith::Figure) => {
                             let s = skin::starter_skin();
                             let s = skin::convert_model(&s, Model::Classic, d.model);
                             self.create_project(name, s, d.model)
                         }
-                        StartWith::Blank => self.create_project(name, Skin::blank(), d.model),
-                        StartWith::File => match Self::pick_png() {
-                            Some(p) => Self::read_skin(&p).and_then(|(s, m)| self.create_project(name, s, m)),
-                            None => Ok(()),
-                        },
+                        (None, StartWith::Blank) => self.create_project(name, Skin::blank(), d.model),
                     };
                     if let Err(e) = res {
                         self.notify(ctx, e, true);
@@ -1126,13 +1153,10 @@ impl App {
                     if let Some(p) = self.project.as_mut().filter(|p| p.id == id) {
                         p.name = name.clone();
                     }
-                    for (m, _) in self.tabs.iter_mut().flatten() {
+                    for (m, _, _) in self.tabs.iter_mut().flatten() {
                         if m.id == id {
                             m.name = name.clone();
                         }
-                    }
-                    if let Some(link) = self.mixer.link.as_mut().filter(|l| l.project_id == id) {
-                        link.name = name.clone();
                     }
                     // nur die Projektinfo speichern, den Skin-Stand nicht ungefragt
                     if let Some(stored) = project::load(&id) {
@@ -1172,9 +1196,6 @@ impl App {
                 Some(true) => {
                     if let Some(i) = self.tab_index_of(&id) {
                         self.close_tab_now(i);
-                    }
-                    if self.mixer.link.as_ref().is_some_and(|l| l.project_id == id) {
-                        self.mixer.unlink();
                     }
                     project::delete(&id);
                     self.cards = None;
@@ -1298,8 +1319,8 @@ impl App {
                 (1, Pending::CloseTab(i)) => {
                     if i == self.active {
                         self.save_project(ctx)
-                    } else if let Some(Some((meta, ed))) = self.tabs.get_mut(i) {
-                        Self::save_pair(meta, ed).is_ok()
+                    } else if let Some(Some((meta, ed, mx))) = self.tabs.get_mut(i) {
+                        Self::save_pair(meta, ed, mx).is_ok()
                     } else {
                         true
                     }
@@ -1354,8 +1375,8 @@ impl App {
 
     fn update_title(&mut self, ctx: &egui::Context) {
         let title = match &self.project {
-            Some(p) if self.screen == Screen::Editor => {
-                format!("{}{} – Skin Studio", p.name, if self.editor.modified { " •" } else { "" })
+            Some(p) if self.screen != Screen::Start => {
+                format!("{}{} – Skin Studio", p.name, if self.tab_modified(self.active) { " •" } else { "" })
             }
             _ => "Skin Studio".to_string(),
         };
@@ -1392,38 +1413,19 @@ impl App {
                     self.notify(ctx, t("Es passen höchstens 26 Skins in den Mixer."), true);
                 }
             }
-            MixerAction::FromEditor(at) => {
-                let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| t("Editor-Skin").into());
-                self.mixer.set_slot(at, self.editor.skin.clone(), self.editor.model, name);
-            }
-            MixerAction::OpenInEditor => {
-                let (skin, raw, model) = (self.mixer.result.clone(), self.mixer.raw_result.clone(), self.mixer.result_model);
-                let linked = self.mixer.link.as_ref().map(|l| l.project_id.clone()).filter(|id| self.tab_index_of(id).is_some());
-                if let Some(id) = linked {
-                    // ins verknüpfte Projekt übernehmen (rückgängig machbar)
-                    let i = self.tab_index_of(&id).unwrap();
-                    self.switch_tab(i);
-                    self.editor.replace_skin(skin, model);
-                    if let Some(l) = self.mixer.link.as_mut() {
-                        l.base = raw;
-                    }
-                    self.screen = Screen::Editor;
-                    self.notify(ctx, t("Mix ins verknüpfte Projekt übernommen (Strg+Z macht es rückgängig)"), false);
-                } else {
-                    let existing = project::list();
-                    let name = (1..)
-                        .map(|n| t1("Partnerlook {0}", n))
-                        .find(|n| !existing.iter().any(|p| &p.meta.name == n))
-                        .unwrap();
-                    match self.create_project(name.clone(), skin, model) {
-                        Ok(()) => {
-                            let id = self.project.as_ref().map(|p| p.id.clone()).unwrap_or_default();
-                            self.mixer.link = Some(MixLink { project_id: id, name: name.clone(), base: raw });
-                            self.notify(ctx, t1("Neues Projekt „{0}“ – Änderungen dort werden im Mixer übernommen", name), false);
-                        }
-                        Err(e) => self.notify(ctx, e, true),
-                    }
+            MixerAction::FromProject(at) => {
+                if self.mixer.set_project_slot(at, self.editor.skin.clone(), self.editor.model).is_none() {
+                    self.notify(ctx, t("Es passen höchstens 26 Skins in den Mixer."), true);
                 }
+            }
+            MixerAction::Apply => {
+                self.mixer.recompute();
+                let (skin, raw, model) = (self.mixer.result.clone(), self.mixer.raw_result.clone(), self.mixer.result_model);
+                self.editor.replace_skin(skin, model);
+                self.mixer.applied_base = Some(raw);
+                self.mixer.changed = true;
+                self.screen = Screen::Editor;
+                self.notify(ctx, t("✔ Mix ins Projekt übernommen – Änderungen im Editor fließen in den Mixer zurück (Strg+Z macht es rückgängig)"), false);
             }
             MixerAction::Export => self.export_mix(ctx),
         }
@@ -1520,17 +1522,15 @@ impl eframe::App for App {
                 }
             }
             Screen::Mixer => {
-                // Änderungen aus dem verknüpften Projekt übernehmen
-                if let Some(id) = self.mixer.link.as_ref().map(|l| l.project_id.clone()) {
-                    if let Some(s) = self.project_skin(&id).cloned() {
-                        self.mixer.sync_from_editor(&s);
-                    }
+                if self.project.is_none() {
+                    self.screen = Screen::Start;
                 }
+                // Änderungen aus dem Editor übernehmen
+                self.mixer.sync_from_editor(&self.editor.skin);
                 self.mixer.recompute();
                 let mut action = MixerAction::None;
-                let has_project = self.project.is_some();
                 egui::Panel::left("mix_in").resizable(false).exact_size(300.0).show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| action = self.mixer.ui_inputs(ui, has_project));
+                    egui::ScrollArea::vertical().show(ui, |ui| action = self.mixer.ui_inputs(ui));
                 });
                 egui::Panel::right("mix_settings").resizable(false).exact_size(300.0).show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| self.mixer.ui_settings(ui));
