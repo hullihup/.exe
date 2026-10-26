@@ -53,7 +53,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Vorlagen gehen immer von **deinem Skin** aus; unter „Teile nehmen von“ wählst du den anderen Skin: **Mein Kopf + Outfit von …**, Kopf von … + mein Outfit, **Oberteil von …**, **Hose von …**, Frisur/Hut von …, Zufallsmix
 - **Smarte Hautton-Erkennung** (wahrnehmungsnaher Lab-Farbraum): erkennt die Hautfarbe samt aller Schattierungen am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen. Die 2. Ebene (Kleidung) wird dabei nie umgefärbt. Hat ein Skin kein erkennbares Gesicht (z. B. eine Maske), wird die Haut an Händen und Hals gesucht. Mit „Erkannte Haut anzeigen“ siehst du, was umgefärbt wird, und mit „Eigene Hautfarbe“ legst du sie selbst fest.
 - Outfit-Farbvarianten (Farbton, Sättigung, Helligkeit oder per 🎲 zufällig)
-- **Editor und Mixer sind immer gleich:** Was du im Mixer änderst (z. B. ein Outfit wählen), ist sofort im Editor – ohne Übernehmen-Knopf. Was du im Editor malst, siehst du sofort im Mixer; Skin A ist immer der aktuelle Editor-Stand.
+- **Editor und Mixer sind immer gleich:** Was du im Mixer änderst (z. B. ein Outfit wählen), ist sofort im Editor – ohne Übernehmen-Knopf. Was du im Editor malst, siehst du sofort im Mixer. „Dein Skin“ bleibt dabei dein Original und wird vom Mix nicht überschrieben.
 - Oder das Ergebnis direkt exportieren
 
 ### ⬇ Export

@@ -1897,8 +1897,11 @@ impl eframe::App for App {
                 if self.project.is_none() {
                     self.screen = Screen::Start;
                 }
-                // Editor → Mixer: Projekt-Skin und Änderungen immer aktuell
-                self.mixer.sync_project_slot(&self.editor.skin, self.editor.model);
+                // Editor → Mixer: Solange noch nichts gemixt wurde, ist „Dein Skin“ der Editor-Stand.
+                // Danach bleibt er das Original; Editor-Änderungen kommen als Korrekturen ins Ergebnis.
+                if self.mixer.applied_base.is_none() {
+                    self.mixer.sync_project_slot(&self.editor.skin, self.editor.model);
+                }
                 self.mixer.sync_from_editor(&self.editor.skin);
                 self.mixer.recompute();
                 let mut action = MixerAction::None;

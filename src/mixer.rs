@@ -268,7 +268,7 @@ impl Mixer {
         self.slots.len() >= MAX_SLOTS
     }
 
-    /// Der Projekt-Skin im Mixer ist immer der aktuelle Stand aus dem Editor.
+    /// Projekt-Skin im Mixer auf den Stand aus dem Editor bringen (nur solange noch nicht gemixt wurde).
     pub fn sync_project_slot(&mut self, skin: &Skin, model: Model) {
         if let Some(k) = self.project_slot() {
             let s = &mut self.slots[k];
