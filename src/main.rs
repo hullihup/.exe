@@ -151,6 +151,7 @@ struct App {
     logo: Option<egui::TextureHandle>,
     updater: Updater,
     update_checked: bool,
+    last_update_check: f64,
     /// Nach dem Download einmal fragen, ob neu gestartet werden soll
     restart_prompt: bool,
     restart_prompted: bool,
@@ -183,6 +184,7 @@ impl App {
             logo: None,
             updater: Updater::default(),
             update_checked: false,
+            last_update_check: 0.0,
             restart_prompt: false,
             restart_prompted: false,
             update_installing: false,
@@ -637,14 +639,13 @@ impl App {
 
     fn update_button(&mut self, ui: &mut egui::Ui) {
         let state = self.updater.state();
-        let (col, tip) = match &state {
-            UpdateState::Available(v) => (Color32::from_rgb(80, 210, 110), t1("Update auf Version {0} verfügbar – klicken zum Installieren", v)),
-            UpdateState::Checking => (Color32::from_gray(150), t("Suche nach Updates …").to_string()),
-            UpdateState::Downloading(v) => (ORANGE, t1("Version {0} wird heruntergeladen …", v)),
-            UpdateState::Ready(v) => (Color32::from_rgb(80, 210, 110), t1("Version {0} ist installiert – klicken zum Neustarten", v)),
-            UpdateState::UpToDate => (Color32::from_gray(120), t1("Du hast die neueste Version ({0})", updater::VERSION)),
-            UpdateState::Failed(e) => (Color32::from_gray(100), t2("Keine Update-Info ({0}). Version {1} – klicken zum erneuten Prüfen", e, updater::VERSION)),
-            UpdateState::Idle => (Color32::from_gray(120), t1("Version {0}", updater::VERSION)),
+        let green = Color32::from_rgb(80, 210, 110);
+        let col = match &state {
+            UpdateState::Available(_) | UpdateState::Ready(_) => green,
+            UpdateState::Downloading(_) => ORANGE,
+            UpdateState::Checking => Color32::from_gray(150),
+            UpdateState::Failed(_) => Color32::from_gray(100),
+            _ => Color32::from_gray(120),
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), Sense::click());
         if resp.hovered() {
@@ -652,20 +653,71 @@ impl App {
         }
         updater::paint_icon(ui.painter(), rect, col);
         if matches!(state, UpdateState::Available(_) | UpdateState::Ready(_)) {
-            ui.painter().circle_filled(rect.right_top() + egui::vec2(-4.0, 4.0), 3.5, Color32::from_rgb(80, 210, 110));
+            ui.painter().circle_filled(rect.right_top() + egui::vec2(-4.0, 4.0), 3.5, green);
         }
         if matches!(state, UpdateState::Checking | UpdateState::Downloading(_)) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
         }
-        let resp = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
-        if resp.clicked() {
-            match state {
-                UpdateState::Available(_) => self.update_confirm = true,
-                UpdateState::Ready(_) => self.restart_for_update(ui.ctx()),
-                UpdateState::Checking | UpdateState::Downloading(_) => {}
-                _ => self.updater.check(ui.ctx()),
-            }
-        }
+        let resp = resp.on_hover_text(t("Updates")).on_hover_cursor(egui::CursorIcon::PointingHand);
+        // Kleines Fenster mit dem Update-Stand
+        egui::Popup::from_toggle_button_response(&resp)
+            .align(egui::RectAlign::BOTTOM_END)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_width(270.0);
+                match &state {
+                    UpdateState::Available(v) => {
+                        ui.label(RichText::new(t("🔄 Update verfügbar")).strong().size(15.0).color(green));
+                        ui.label(t2("Version {0} ist da (du hast {1}).", v, updater::VERSION));
+                        ui.add_space(6.0);
+                        let b = egui::Button::new(RichText::new(t("Jetzt installieren")).strong().color(Color32::WHITE)).fill(ORANGE);
+                        if ui.add(b).clicked() {
+                            self.updater.install(ui.ctx());
+                            self.update_installing = true;
+                        }
+                    }
+                    UpdateState::Downloading(v) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t1("Version {0} wird heruntergeladen …", v));
+                        });
+                    }
+                    UpdateState::Ready(v) => {
+                        ui.label(RichText::new(t("✔ Update installiert")).strong().size(15.0).color(green));
+                        ui.label(t1("Starte neu, um Version {0} zu benutzen.", v));
+                        ui.add_space(6.0);
+                        let b = egui::Button::new(RichText::new(t("Jetzt neu starten")).strong().color(Color32::WHITE)).fill(ORANGE);
+                        if ui.add(b).clicked() {
+                            self.restart_for_update(ui.ctx());
+                        }
+                    }
+                    UpdateState::Failed(e) => {
+                        ui.label(RichText::new(t("Keine Verbindung zum Update-Server")).strong());
+                        ui.label(RichText::new(e).small().color(ORANGE));
+                        ui.label(RichText::new(t1("Deine Version: {0}", updater::VERSION)).small().weak());
+                        if ui.button(t("🔄 Nochmal prüfen")).clicked() {
+                            self.updater.check(ui.ctx());
+                        }
+                    }
+                    UpdateState::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t("Suche nach Updates …"));
+                        });
+                    }
+                    UpdateState::UpToDate | UpdateState::Idle => {
+                        ui.label(RichText::new(t("✔ Keine Updates")).strong().size(15.0));
+                        ui.label(t1("Du bist auf dem neuesten Stand (Version {0}).", updater::VERSION));
+                    }
+                }
+                ui.add_space(4.0);
+                let checked = match self.updater.seconds_since_check() {
+                    Some(s) => t1("Zuletzt geprüft vor {0} s", s),
+                    None => t("Noch nicht geprüft").to_string(),
+                };
+                ui.label(RichText::new(format!("{checked} · {}", t("prüft alle 5 Sekunden"))).small().weak());
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+            });
     }
 
     fn restart_for_update(&mut self, ctx: &egui::Context) {
@@ -703,14 +755,11 @@ impl App {
                         ui.add(egui::Image::new((logo, egui::vec2(56.0, 56.0))));
                         ui.vertical(|ui| {
                             ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Skin Studio").size(30.0).strong().color(Color32::WHITE));
-                                ui.add_space(4.0);
-                                self.update_button(ui);
-                            });
+                            ui.label(RichText::new("Skin Studio").size(30.0).strong().color(Color32::WHITE));
                             ui.label(RichText::new(t("Was möchtest du heute erstellen?")).size(15.0).weak());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.update_button(ui);
                             self.language_menu(ui);
                         });
                     });
@@ -903,7 +952,6 @@ impl App {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.add(egui::Image::new((logo, egui::vec2(20.0, 20.0))));
             ui.label(RichText::new("Skin Studio").strong().color(Color32::WHITE));
-            self.update_button(ui);
             ui.add_space(2.0);
             if ui.button("🏠").on_hover_text(t("Zur Startseite")).clicked() {
                 self.go_home();
@@ -1023,6 +1071,8 @@ impl App {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.update_button(ui);
+                ui.add_space(4.0);
                 let btn = egui::Button::new(RichText::new(t("⬇  Exportieren")).strong().color(Color32::WHITE))
                     .fill(ui.visuals().selection.bg_fill)
                     .min_size(egui::vec2(124.0, 26.0));
@@ -1649,10 +1699,17 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Beim Start sichtbar prüfen, danach alle 5 Sekunden still im Hintergrund
+        let now = ctx.input(|i| i.time);
         if !self.update_checked {
             self.update_checked = true;
+            self.last_update_check = now;
             self.updater.check(&ctx);
+        } else if now - self.last_update_check >= 5.0 {
+            self.last_update_check = now;
+            self.updater.check_quiet(&ctx);
         }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64((5.0 - (now - self.last_update_check)).max(0.1)));
 
         // Beim Schließen fragen, ob gespeichert werden soll
         if ctx.input(|i| i.viewport().close_requested()) && self.unsaved_count() > 0 && !self.allow_close {

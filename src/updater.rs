@@ -30,11 +30,33 @@ pub enum State {
 #[derive(Clone)]
 pub struct Updater {
     state: Arc<Mutex<State>>,
+    /// läuft gerade eine stille Prüfung im Hintergrund?
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    /// wann zuletzt erfolgreich geprüft wurde
+    last_ok: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl Default for Updater {
     fn default() -> Self {
-        Updater { state: Arc::new(Mutex::new(State::Idle)) }
+        Updater { state: Arc::new(Mutex::new(State::Idle)), busy: Default::default(), last_ok: Default::default() }
+    }
+}
+
+/// version.txt vom Server lesen und mit der eigenen Version vergleichen.
+fn fetch_state() -> State {
+    // Zeitstempel anhängen, damit kein veralteter Stand aus einem Zwischenspeicher kommt
+    match http_get(&format!("{}version.txt?t={}", base_url(), crate::project::now()), None) {
+        Ok(bytes) => {
+            let remote = String::from_utf8_lossy(&bytes).trim().to_string();
+            if parse_version(&remote).iter().all(|&n| n == 0) {
+                State::Failed(t("Ungültige Versionsangabe auf dem Server.").into())
+            } else if is_newer(&remote, VERSION) {
+                State::Available(remote)
+            } else {
+                State::UpToDate
+            }
+        }
+        Err(e) => State::Failed(e),
     }
 }
 
@@ -115,32 +137,57 @@ impl Updater {
         }
     }
 
-    /// Im Hintergrund nach einer neuen Version suchen.
+    /// Sekunden seit der letzten erfolgreichen Prüfung
+    pub fn seconds_since_check(&self) -> Option<u64> {
+        self.last_ok.lock().ok()?.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Im Hintergrund nach einer neuen Version suchen (sichtbar: Symbol zeigt „sucht …“, Fehler werden angezeigt).
     pub fn check(&self, ctx: &egui::Context) {
         if matches!(self.state(), State::Checking | State::Downloading(_)) {
             return;
         }
         self.set(State::Checking);
+        self.spawn_check(ctx, false);
+    }
+
+    /// Stille Prüfung (z. B. alle paar Sekunden): ändert nur etwas, wenn es Neues gibt.
+    pub fn check_quiet(&self, ctx: &egui::Context) {
+        if matches!(self.state(), State::Checking | State::Downloading(_) | State::Ready(_)) {
+            return;
+        }
+        self.spawn_check(ctx, true);
+    }
+
+    fn spawn_check(&self, ctx: &egui::Context, quiet: bool) {
+        use std::sync::atomic::Ordering;
+        // läuft schon eine Prüfung, wird deren Ergebnis übernommen
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let me = self.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            // Zeitstempel anhängen, damit kein veralteter Stand aus einem Zwischenspeicher kommt
-            let result = http_get(&format!("{}version.txt?t={}", base_url(), crate::project::now()), None);
-            let new_state = match result {
-                Ok(bytes) => {
-                    let remote = String::from_utf8_lossy(&bytes).trim().to_string();
-                    if parse_version(&remote).iter().all(|&n| n == 0) {
-                        State::Failed(t("Ungültige Versionsangabe auf dem Server.").into())
-                    } else if is_newer(&remote, VERSION) {
-                        State::Available(remote)
-                    } else {
-                        State::UpToDate
-                    }
+            let new_state = fetch_state();
+            let ok = !matches!(new_state, State::Failed(_));
+            if ok {
+                if let Ok(mut g) = me.last_ok.lock() {
+                    *g = Some(std::time::Instant::now());
                 }
-                Err(e) => State::Failed(e),
+            }
+            let cur = me.state();
+            // still: Fehler nur übernehmen, wenn es noch gar keinen Stand gibt; laufende Downloads nie überschreiben
+            let take = match (&cur, quiet) {
+                (State::Downloading(_) | State::Ready(_), _) => false,
+                (State::Checking, _) => true,
+                (_, false) => true,
+                (_, true) => ok || matches!(cur, State::Idle),
             };
-            me.set(new_state);
-            ctx.request_repaint();
+            if take && cur != new_state {
+                me.set(new_state);
+                ctx.request_repaint();
+            }
+            me.busy.store(false, Ordering::SeqCst);
         });
     }
 

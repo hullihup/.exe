@@ -12,7 +12,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 ### 🌐 Sprachen, Tabs & Updates
 - Komplett auf **Deutsch** und **Englisch (US)**, umschaltbar auf der Startseite oder unter Hilfe
 - **Tabs** wie in Blockbench: mehrere Projekte gleichzeitig offen, ➕ für ein weiteres, ✖ zum Schließen (Strg+T / Strg+W)
-- **Update-Symbol** neben „Skin Studio“: grau = aktuell, **grün = Update verfügbar**. Ein Klick lädt die neue Version herunter und installiert sie, ohne dass du selbst eine neue exe herunterladen musst.
+- **Update-Symbol** oben rechts: grau = aktuell, **grün = Update verfügbar**. Ein Klick öffnet ein kleines Fenster mit dem Stand („Keine Updates – du bist auf dem neuesten Stand“ oder „Jetzt installieren“). Skin Studio prüft alle 5 Sekunden im Hintergrund, ob es eine neue Version gibt, und installiert sie auf Knopfdruck, ohne dass du selbst eine neue exe herunterladen musst.
 
 ### 🏠 Startseite & Projekte
 - Beim Start erscheint eine Startseite. Mit **➕ Neues Projekt** gibst du einen Namen ein und kannst optional gleich deinen Skin (.png) hinzufügen – oder du machst mit dem **letzten Projekt** weiter.
