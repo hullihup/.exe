@@ -474,4 +474,7 @@ pub static EN: &[(&str, &str)] = &[
     ("🌐 Alle früheren Skins auf NameMC", "🌐 All earlier skins on NameMC"),
     ("Öffnet das NameMC-Profil im Browser. Dort einen Skin herunterladen und die PNG hierher ziehen – er wird dann bei diesem Spieler gespeichert.", "Opens the NameMC profile in your browser. Download a skin there and drag the PNG here – it is then saved for this player."),
     ("Skin von NameMC heruntergeladen? Einfach die PNG hierher ziehen – sie wird bei {0} gespeichert.", "Downloaded a skin from NameMC? Just drag the PNG here – it will be saved for {0}."),
+    ("Öffnet das NameMC-Profil im Browser. Jeder Skin, den du dort herunterlädst, landet automatisch hier.", "Opens the NameMC profile in your browser. Every skin you download there shows up here automatically."),
+    ("Auf NameMC einfach bei jedem Skin auf „Download“ klicken – Skin Studio übernimmt neue Downloads automatisch und speichert sie bei {0}.", "On NameMC just click “Download” on each skin – Skin Studio picks up new downloads automatically and saves them for {0}."),
+    ("✔ {0} Skins aus dem Download-Ordner übernommen", "✔ {0} skins taken from the downloads folder"),
 ];

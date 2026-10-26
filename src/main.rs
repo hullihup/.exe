@@ -74,9 +74,49 @@ struct NewDialog {
     faces: Vec<(Skin, egui::TextureHandle)>,
     /// Skins aus dem Minecraft-Launcher
     launcher: Vec<mcskin::Known>,
+    /// Download-Ordner beobachten: seit wann, schon gesehene Dateien, letzte Prüfung, übernommene Anzahl
+    watch: Option<(std::time::SystemTime, Vec<PathBuf>, f64, usize)>,
+}
+
+/// Download-Ordner des Benutzers
+fn downloads_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(home).join("Downloads"))
 }
 
 impl NewDialog {
+    /// Neu heruntergeladene Skins (z. B. von NameMC) automatisch übernehmen – höchstens einmal pro Sekunde.
+    fn scan_downloads(&mut self, now: f64) {
+        let Some((since, seen, last, count)) = &mut self.watch else { return };
+        if now - *last < 1.0 {
+            return;
+        }
+        *last = now;
+        let Some(dir) = downloads_dir() else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let since = *since - std::time::Duration::from_secs(2);
+        let mut found = Vec::new();
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) || seen.contains(&path) {
+                continue;
+            }
+            let fresh = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t >= since);
+            if !fresh {
+                continue;
+            }
+            seen.push(path.clone());
+            if let Some(skin) = std::fs::read(&path).ok().and_then(|b| Skin::from_png(&b).ok()) {
+                found.push((App::file_stem(&path), skin));
+            }
+        }
+        *count += found.len();
+        for (label, skin) in found {
+            let model = detect_model(&skin);
+            self.take_skin(label, skin, model);
+        }
+    }
+
     /// Skin aus einer Datei übernehmen; ist ein Spieler gefunden, kommt er auch in dessen Skin-Liste.
     fn take_skin(&mut self, label: String, skin: Skin, model: Model) {
         if let Some(name) = self.found_for.clone() {
@@ -539,6 +579,7 @@ impl App {
             found_for: None,
             thumb: None,
             faces: Vec::new(),
+            watch: None,
             launcher: mcskin::launcher_skins(),
         });
     }
@@ -1285,13 +1326,31 @@ impl App {
                         ui.horizontal_wrapped(|ui| {
                             if ui
                                 .button(t("🌐 Alle früheren Skins auf NameMC"))
-                                .on_hover_text(t("Öffnet das NameMC-Profil im Browser. Dort einen Skin herunterladen und die PNG hierher ziehen – er wird dann bei diesem Spieler gespeichert."))
+                                .on_hover_text(t("Öffnet das NameMC-Profil im Browser. Jeder Skin, den du dort herunterlädst, landet automatisch hier."))
                                 .clicked()
                             {
                                 open_url(&format!("https://namemc.com/profile/{name}"));
                             }
                         });
-                        ui.label(RichText::new(t1("Skin von NameMC heruntergeladen? Einfach die PNG hierher ziehen – sie wird bei {0} gespeichert.", &name)).small().weak());
+                        // Download-Ordner beobachten, sobald ein Spieler gefunden ist
+                        let now = ui.input(|i| i.time);
+                        if d.watch.is_none() {
+                            d.watch = Some((std::time::SystemTime::now(), Vec::new(), 0.0, 0));
+                        }
+                        d.scan_downloads(now);
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                        let added = d.watch.as_ref().map(|w| w.3).unwrap_or(0);
+                        ui.label(
+                            RichText::new(t1(
+                                "Auf NameMC einfach bei jedem Skin auf „Download“ klicken – Skin Studio übernimmt neue Downloads automatisch und speichert sie bei {0}.",
+                                &name,
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                        if added > 0 {
+                            ui.label(RichText::new(t1("✔ {0} Skins aus dem Download-Ordner übernommen", added)).small().color(ORANGE));
+                        }
                     }
                     None => {}
                 }
