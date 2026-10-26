@@ -1341,15 +1341,81 @@ fn palette_from(cand: &[([f32; 3], f32)], min_weight: f32) -> Option<TonePalette
 }
 
 /// Ermittelt die Hautfarbe eines Skins: zuerst am Gesicht, sonst an Händen und Hals.
+/// Hautkandidaten im Gesicht. Haare werden herausgerechnet: Farben, die oben auf dem Kopf
+/// vorkommen, sind fast immer Haare oder ein Hut – genau wie Pixel, die von der 2. Ebene verdeckt sind.
+fn collect_face(s: &Skin, model: Model, out: &mut Vec<([f32; 3], f32)>) {
+    let base = skin::box_of(model, Part::Head, Layer::Base);
+    let over = skin::box_of(model, Part::Head, Layer::Overlay);
+    // Haarfarben: Oberseite des Kopfes (beide Ebenen) und obere Reihen hinten
+    let mut hair: Vec<[f32; 3]> = Vec::new();
+    for (b, face, rows) in [(&base, Face::Top, 0..8), (&over, Face::Top, 0..8), (&base, Face::Back, 0..3), (&over, Face::Back, 0..3)] {
+        let (fx, fy, fw, fh) = b.face_rect(face);
+        for j in rows.filter(|&j| j < fh) {
+            for i in 0..fw {
+                let c = s.get(fx + i, fy + j);
+                if c[3] == 255 {
+                    hair.push(color::to_lab(c));
+                }
+            }
+        }
+    }
+    let hair_like = |lab: [f32; 3]| hair.iter().filter(|h| shade_dist(**h, lab) < 9.0).count() >= 3;
+    let top_is_skin_colored = {
+        // Glatze/kurze Haare in Hautfarbe: dann nicht bestrafen
+        let (fx, fy, _, _) = base.face_rect(Face::Front);
+        let cheek = color::to_lab(s.get(fx + 1, fy + 5));
+        hair.iter().filter(|h| shade_dist(**h, cheek) < 6.0).count() > hair.len() / 2
+    };
+    for face in [Face::Front, Face::Right, Face::Left, Face::Bottom] {
+        let (fx, fy, fw, fh) = base.face_rect(face);
+        let (ox, oy, _, _) = over.face_rect(face);
+        for j in 0..fh {
+            for i in 0..fw {
+                let c = s.get(fx + i, fy + j);
+                if c[3] < 255 {
+                    continue;
+                }
+                // von der 2. Ebene verdeckt (Haare, Brille, Maske …) → nicht sichtbar
+                if s.get(ox + i, oy + j)[3] == 255 {
+                    continue;
+                }
+                let lab = color::to_lab(c);
+                if !skin_like(lab) {
+                    continue;
+                }
+                // Wangen und Nase zählen am meisten, Stirn (oft Haare) kaum
+                let mut w = match face {
+                    Face::Front => match j {
+                        0..=1 => 0.2,
+                        2..=3 => 0.6,
+                        4 => 1.2,
+                        5..=6 => 3.0,
+                        _ => 1.2,
+                    },
+                    Face::Bottom => 0.6,
+                    _ => {
+                        if j >= 3 {
+                            0.6
+                        } else {
+                            0.1
+                        }
+                    }
+                };
+                if face == Face::Front && (1..=6).contains(&i) && (5..=6).contains(&j) {
+                    w *= 1.5;
+                }
+                if !top_is_skin_colored && hair_like(lab) {
+                    w *= 0.1;
+                }
+                out.push((lab, w));
+            }
+        }
+    }
+}
+
 pub fn detect_palette(s: &Skin, model: Model) -> Option<TonePalette> {
     let mut cand = Vec::new();
-    collect(
-        s,
-        model,
-        Part::Head,
-        &[(Face::Front, 2..8, 2.0), (Face::Right, 3..8, 1.0), (Face::Left, 3..8, 1.0), (Face::Bottom, 0..8, 0.6), (Face::Back, 6..8, 0.3)],
-        &mut cand,
-    );
+    collect_face(s, model, &mut cand);
     if let Some(p) = palette_from(&cand, 6.0) {
         // Hände/Hals mit dazunehmen, damit auch deren Schattierungen erkannt werden
         let mut extra = cand.clone();
@@ -1463,6 +1529,45 @@ mod tests {
     }
 
     #[test]
+    fn haare_sind_keine_haut() {
+        let hair: Rgba = [0x4B, 0x39, 0x30, 255];
+        let hair_dark: Rgba = [0x3A, 0x2B, 0x24, 255];
+        let skin_c: Rgba = [0xE0, 0xAE, 0x8C, 255];
+        let skin_d: Rgba = [0xD0, 0x9C, 0x7A, 255];
+        let mut s = Skin::blank();
+        let b = skin::box_of(Model::Classic, Part::Head, Layer::Base);
+        for face in Face::ALL {
+            let (fx, fy, fw, fh) = b.face_rect(face);
+            for j in 0..fh {
+                for i in 0..fw {
+                    let hairy = match face {
+                        Face::Top | Face::Back => true,
+                        Face::Front => j <= 2 || (j <= 4 && (i == 0 || i == 7)),
+                        Face::Bottom => false,
+                        _ => j <= 5,
+                    };
+                    let c = if hairy {
+                        if (i + j) % 3 == 0 { hair_dark } else { hair }
+                    } else if (i + j) % 4 == 0 {
+                        skin_d
+                    } else {
+                        skin_c
+                    };
+                    s.set(fx + i, fy + j, c);
+                }
+            }
+        }
+        // Augen
+        let (fx, fy, _, _) = b.face_rect(Face::Front);
+        for (i, c) in [(1, [255, 255, 255, 255]), (2, [40, 90, 200, 255]), (5, [40, 90, 200, 255]), (6, [255, 255, 255, 255])] {
+            s.set(fx + i, fy + 4, c);
+        }
+        let pal = detect_palette(&s, Model::Classic).expect("Haut gefunden");
+        let l = color::to_lab(pal.main)[0];
+        assert!(l > 65.0, "Hauptton sollte die helle Haut sein, nicht die Haare: {:?}", pal.main);
+    }
+
+    #[test]
     fn oberteil_und_hose_vom_anderen_skin() {
         let other = [10, 200, 10, 255];
         let mine = [200, 10, 10, 255];
@@ -1483,3 +1588,4 @@ mod tests {
         assert_eq!(color_of(&m, Part::LeftLeg), other, "Hose kommt vom anderen Skin");
     }
 }
+
