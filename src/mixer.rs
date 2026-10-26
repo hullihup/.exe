@@ -117,8 +117,6 @@ pub enum MixerAction {
     Load(Option<usize>),
     /// Projekt-Skin: `None` = hinzufügen, `Some(i)` = Skin i ersetzen
     FromProject(Option<usize>),
-    /// Ergebnis ins Projekt übernehmen
-    Apply,
     Export,
 }
 
@@ -174,6 +172,8 @@ pub struct Mixer {
     pub vis: Visibility,
     pub preview: Preview,
     last_inputs: Option<Inputs>,
+    /// Mix-Einstellungen, die zuletzt automatisch in den Editor übernommen wurden
+    applied_recipe: Option<Inputs>,
     tones: Vec<Option<TonePalette>>,
     head_tone: Option<TonePalette>,
     skin_mask: Vec<(usize, usize)>,
@@ -210,6 +210,7 @@ impl Mixer {
             vis: Visibility::default(),
             preview: Preview::new(),
             last_inputs: None,
+            applied_recipe: None,
             tones: Vec::new(),
             head_tone: None,
             skin_mask: Vec::new(),
@@ -262,6 +263,46 @@ impl Mixer {
 
     pub fn is_full(&self) -> bool {
         self.slots.len() >= MAX_SLOTS
+    }
+
+    /// Der Projekt-Skin im Mixer ist immer der aktuelle Stand aus dem Editor.
+    pub fn sync_project_slot(&mut self, skin: &Skin, model: Model) {
+        if let Some(k) = self.project_slot() {
+            let s = &mut self.slots[k];
+            if s.skin != *skin || s.model != model {
+                s.skin = skin.clone();
+                s.model = model;
+            }
+        }
+    }
+
+    /// Die Mix-Einstellungen ohne den Projekt-Skin und die Editor-Änderungen
+    fn recipe(&self) -> Option<Inputs> {
+        let mut r = self.last_inputs.clone()?;
+        for (skin, _, kind) in r.slots.iter_mut() {
+            if *kind == SlotKind::Project {
+                *skin = Skin::blank();
+            }
+        }
+        r.patch.clear();
+        Some(r)
+    }
+
+    /// Hat sich im Mixer etwas geändert, kommt das Ergebnis sofort in den Editor (ohne Übernehmen-Knopf).
+    pub fn auto_apply(&mut self) -> Option<(Skin, Model)> {
+        self.recompute();
+        let recipe = self.recipe()?;
+        let first = self.applied_recipe.is_none();
+        if self.applied_recipe.as_ref() == Some(&recipe) {
+            return None;
+        }
+        self.applied_recipe = Some(recipe);
+        if first || self.slots.is_empty() {
+            return None;
+        }
+        self.applied_base = Some(self.raw_result.clone());
+        self.changed = true;
+        Some((self.result.clone(), self.result_model))
     }
 
     fn project_slot(&self) -> Option<usize> {
@@ -1072,12 +1113,6 @@ impl Mixer {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let apply = egui::Button::new(RichText::new(t("✔  Ins Projekt übernehmen")).strong().color(Color32::WHITE))
-                .fill(crate::ORANGE)
-                .min_size(egui::vec2(190.0, 32.0));
-            if ui.add(apply).on_hover_text(t("Ergebnis als Skin dieses Projekts übernehmen und im Editor weiterbearbeiten")).clicked() {
-                action = MixerAction::Apply;
-            }
             if ui.add(egui::Button::new(RichText::new(t("💾  Exportieren")).strong()).min_size(egui::vec2(140.0, 32.0))).clicked() {
                 action = MixerAction::Export;
             }

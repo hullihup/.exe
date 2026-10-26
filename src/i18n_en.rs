@@ -390,7 +390,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Skin Studio {0} ist bereits installiert. Die Installation wird aktualisiert.", "Skin Studio {0} is already installed. The installation will be updated."),
     ("Neues Projekt", "New project"),
     ("Name eingeben und optional deinen Skin (.png) hinzufügen. Jedes Projekt hat Editor und Skin-Mixer mit Outfit-Vorlagen – oben einfach umschalten.", "Enter a name and optionally add your skin (.png). Every project has the editor and the skin mixer with outfit presets – just switch at the top."),
-    ("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. „Ins Projekt übernehmen“ speichert den Mix als Projekt-Skin.", "Skin mixer – combine skins and outfit presets. “Apply to project” saves the mix as the project skin."),
+    ("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. Änderungen landen sofort im Editor.", "Skin mixer – combine skins and outfit presets. Changes go straight into the editor."),
     ("➕ Neues Projekt", "➕ New project"),
     ("Dein Skin (optional)", "Your skin (optional)"),
     ("📂 PNG auswählen …", "📂 Choose PNG …"),

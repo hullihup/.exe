@@ -29,6 +29,8 @@ pub struct Preview {
     pub ghosts: bool,
     /// Pixelraster auf dem Modell
     pub grid: bool,
+    /// keinen Bodenschatten zeichnen (Editor)
+    pub no_shadow: bool,
 }
 
 pub struct PreviewInput {
@@ -170,7 +172,7 @@ impl Preview {
         let painter = ui.painter_at(rect);
         // weicher Bodenschatten
         let ground = rect.center_bottom() - egui::vec2(0.0, rect.height() * 0.08);
-        for k in 0..6 {
+        for k in 0..if self.no_shadow { 0 } else { 6 } {
             let r = 1.0 - k as f32 * 0.15;
             painter.add(egui::Shape::ellipse_filled(
                 ground,

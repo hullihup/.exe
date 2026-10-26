@@ -213,6 +213,7 @@ impl Editor {
         preview.antialias = true;
         preview.ghosts = true;
         preview.grid = true;
+        preview.no_shadow = true;
         Editor {
             skin: skin::starter_skin(),
             model: Model::Classic,

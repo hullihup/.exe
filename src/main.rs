@@ -1204,7 +1204,7 @@ impl App {
                 });
             }
             Screen::Mixer => {
-                ui.label(t("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. „Ins Projekt übernehmen“ speichert den Mix als Projekt-Skin."));
+                ui.label(t("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. Änderungen landen sofort im Editor."));
             }
             Screen::Start => {}
         });
@@ -1283,9 +1283,13 @@ impl App {
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     let searched = d.lookup.as_ref().is_some_and(|(n, _)| n.eq_ignore_ascii_case(&name));
                     if !name.is_empty() && !searched {
-                        // 2 Sekunden nach dem letzten Tippen (oder sofort mit Enter) suchen
-                        let wait = 2.0 - (now - d.user_edit);
+                        // direkt nach dem Tippen suchen (kurze Pause, damit nicht jeder Buchstabe eine Anfrage auslöst)
+                        let wait = 0.3 - (now - d.user_edit);
                         if enter || wait <= 0.0 {
+                            // schon einmal gefunden? Dann sofort den gespeicherten Skin zeigen, bis der aktuelle da ist
+                            if let Some(k) = mcskin::history(&name).into_iter().next() {
+                                d.file = Some((name.clone(), k.skin, k.model));
+                            }
                             d.lookup = Some((name.clone(), mcskin::fetch_async(name, ui.ctx())));
                         } else {
                             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.05)));
@@ -1788,15 +1792,6 @@ impl App {
                     self.notify(ctx, t("Es passen höchstens 26 Skins in den Mixer."), true);
                 }
             }
-            MixerAction::Apply => {
-                self.mixer.recompute();
-                let (skin, raw, model) = (self.mixer.result.clone(), self.mixer.raw_result.clone(), self.mixer.result_model);
-                self.editor.replace_skin(skin, model);
-                self.mixer.applied_base = Some(raw);
-                self.mixer.changed = true;
-                self.screen = Screen::Editor;
-                self.notify(ctx, t("✔ Mix ins Projekt übernommen – Änderungen im Editor fließen in den Mixer zurück (Strg+Z macht es rückgängig)"), false);
-            }
             MixerAction::Export => self.export_mix(ctx),
         }
     }
@@ -1904,7 +1899,8 @@ impl eframe::App for App {
                 if self.project.is_none() {
                     self.screen = Screen::Start;
                 }
-                // Änderungen aus dem Editor übernehmen
+                // Editor → Mixer: Projekt-Skin und Änderungen immer aktuell
+                self.mixer.sync_project_slot(&self.editor.skin, self.editor.model);
                 self.mixer.sync_from_editor(&self.editor.skin);
                 self.mixer.recompute();
                 let mut action = MixerAction::None;
@@ -1921,6 +1917,14 @@ impl eframe::App for App {
                     }
                 });
                 self.mixer_action(&ctx, action);
+                // Mixer → Editor: Änderungen sofort übernehmen (beim Ziehen eines Reglers erst beim Loslassen)
+                if !ctx.input(|i| i.pointer.any_down()) {
+                    if let Some((skin, model)) = self.mixer.auto_apply() {
+                        if skin != self.editor.skin || model != self.editor.model {
+                            self.editor.replace_skin(skin, model);
+                        }
+                    }
+                }
             }
         }
 

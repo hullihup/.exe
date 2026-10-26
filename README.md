@@ -16,7 +16,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 
 ### 🏠 Startseite & Projekte
 - Beim Start erscheint eine Startseite. Mit **➕ Neues Projekt** gibst du einen Namen ein und kannst optional gleich deinen Skin (.png) hinzufügen – oder du machst mit dem **letzten Projekt** weiter.
-- Statt einer PNG kannst du auch einen **Minecraft-Benutzernamen** eingeben: 2 Sekunden nach dem Tippen (oder mit Enter) wird der aktuelle Skin des Spielers über die offizielle Mojang-Schnittstelle geladen und angezeigt.
+- Statt einer PNG kannst du auch einen **Minecraft-Benutzernamen** eingeben: direkt nach dem Tippen wird der aktuelle Skin des Spielers über die offizielle Mojang-Schnittstelle geladen und angezeigt.
 - Darunter stehen als kleine Gesichter (wie bei NameMC) **frühere Skins** dieses Spielers, die Skin Studio schon einmal gesehen hat, und die Skins aus der **Bibliothek deines Minecraft-Launchers** (`%APPDATA%\.minecraft`). Ein Klick wählt den Skin.
 - **🌐 Alle früheren Skins auf NameMC** öffnet das NameMC-Profil im Browser. Dort bei jedem Skin einfach auf „Download“ klicken: Skin Studio beobachtet den Download-Ordner, übernimmt neue Skins automatisch und speichert sie dauerhaft bei diesem Spieler (Ziehen ins Fenster geht auch).
 - Jedes Projekt hat **Editor und Skin-Mixer** zusammen, oben einfach umschalten. Der Mixer-Stand wird mit dem Projekt gespeichert.
@@ -53,7 +53,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Vorlagen: **Kopf A + Outfit B** (Partnerlook), Oberteil tauschen, Hose tauschen, Frisur oder Hut tauschen, Zufallsmix
 - **Smarte Hautton-Erkennung** (wahrnehmungsnaher Lab-Farbraum): erkennt die Hautfarbe samt aller Schattierungen am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen. Die 2. Ebene (Kleidung) wird dabei nie umgefärbt. Hat ein Skin kein erkennbares Gesicht (z. B. eine Maske), wird die Haut an Händen und Hals gesucht. Mit „Erkannte Haut anzeigen“ siehst du, was umgefärbt wird, und mit „Eigene Hautfarbe“ legst du sie selbst fest.
 - Outfit-Farbvarianten (Farbton, Sättigung, Helligkeit oder per 🎲 zufällig)
-- **✔ Ins Projekt übernehmen** macht das Ergebnis zum Skin deines Projekts. Änderungen im Editor werden **automatisch im Mixer übernommen**, auch wenn du danach die Mix-Einstellungen änderst
+- **Editor und Mixer sind immer gleich:** Was du im Mixer änderst (z. B. ein Outfit wählen), ist sofort im Editor – ohne Übernehmen-Knopf. Was du im Editor malst, siehst du sofort im Mixer; Skin A ist immer der aktuelle Editor-Stand.
 - Oder das Ergebnis direkt exportieren
 
 ### ⬇ Export
