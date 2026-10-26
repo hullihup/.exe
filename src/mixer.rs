@@ -172,6 +172,8 @@ pub struct Mixer {
     pub vis: Visibility,
     pub preview: Preview,
     last_inputs: Option<Inputs>,
+    /// gewählter Skin für die Vorlagen-Knöpfe
+    donor: Option<usize>,
     /// Mix-Einstellungen, die zuletzt automatisch in den Editor übernommen wurden
     applied_recipe: Option<Inputs>,
     tones: Vec<Option<TonePalette>>,
@@ -210,6 +212,7 @@ impl Mixer {
             vis: Visibility::default(),
             preview: Preview::new(),
             last_inputs: None,
+            donor: None,
             applied_recipe: None,
             tones: Vec::new(),
             head_tone: None,
@@ -352,6 +355,19 @@ impl Mixer {
 
     // ------------------------------------------------------------- Vorlagen
 
+    /// Der eigene Skin (Projekt-Skin), sonst A
+    fn base_slot(&self) -> usize {
+        self.project_slot().unwrap_or(0)
+    }
+
+    /// Von welchem Skin die Vorlagen Teile nehmen (nie der eigene Skin)
+    fn donor_slot(&self) -> Option<usize> {
+        let base = self.base_slot();
+        self.donor
+            .filter(|&d| d < self.slots.len() && d != base)
+            .or_else(|| (0..self.slots.len()).find(|&i| i != base))
+    }
+
     fn preset_partner(&mut self, head: u8, outfit: u8) {
         for p in Part::ALL {
             let s = Src::Slot(if p == Part::Head { head } else { outfit });
@@ -363,9 +379,12 @@ impl Mixer {
         self.changed = true;
     }
 
-    fn preset_parts(&mut self, from_b: &[Part], name: &str) {
+    /// `parts` kommen vom gewählten anderen Skin, alles andere vom eigenen Skin.
+    fn preset_parts(&mut self, parts: &[Part], name: &str) {
+        let Some(donor) = self.donor_slot() else { return };
+        let base = self.base_slot();
         for p in Part::ALL {
-            let s = Src::Slot(if from_b.contains(&p) { 1 } else { 0 });
+            let s = Src::Slot(if parts.contains(&p) { donor } else { base } as u8);
             self.choice[p.idx()] = [s, s];
         }
         self.choice[HANDS] = [Src::Same, Src::Same];
@@ -958,23 +977,47 @@ impl Mixer {
         let n = self.slots.len();
         let names: Vec<String> = self.slots.iter().map(|s| s.name.clone()).collect();
         heading(ui, t("VORLAGEN"));
+        let base = self.base_slot();
+        let donor = self.donor_slot();
+        let two = donor.is_some();
+        if let Some(d) = donor {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("Teile nehmen von:")).small());
+                egui::ComboBox::from_id_salt("mix_donor")
+                    .selected_text(format!("{} · {}", letter(d), names.get(d).cloned().unwrap_or_default()))
+                    .show_ui(ui, |ui| {
+                        for i in (0..n).filter(|&i| i != base) {
+                            if ui.selectable_label(i == d, format!("{} · {}", letter(i), names[i])).clicked() {
+                                self.donor = Some(i);
+                            }
+                        }
+                    });
+            });
+        }
+        let dl = donor.map(letter).unwrap_or('B');
         ui.horizontal_wrapped(|ui| {
-            let two = n >= 2;
-            if ui.add_enabled(two, egui::Button::new(t("💑 Kopf A + Outfit B"))).clicked() {
-                self.preset_partner(0, 1);
+            if ui.add_enabled(two, egui::Button::new(t1("💑 Mein Kopf + Outfit von {0}", dl))).clicked() {
+                if let Some(d) = donor {
+                    self.preset_partner(base as u8, d as u8);
+                }
             }
-            if ui.add_enabled(two, egui::Button::new(t("💑 Kopf B + Outfit A"))).clicked() {
-                self.preset_partner(1, 0);
+            if ui.add_enabled(two, egui::Button::new(t1("💑 Kopf von {0} + mein Outfit", dl))).clicked() {
+                if let Some(d) = donor {
+                    self.preset_partner(d as u8, base as u8);
+                }
             }
-            if ui.add_enabled(two, egui::Button::new(t("👕 Oberteil von B"))).clicked() {
-                self.preset_parts(&[Part::Body, Part::RightArm, Part::LeftArm], t("Oberteil von B"));
+            if ui.add_enabled(two, egui::Button::new(t1("👕 Oberteil von {0}", dl))).clicked() {
+                self.preset_parts(&[Part::Body, Part::RightArm, Part::LeftArm], &t1("Oberteil von {0}", dl));
             }
-            if ui.add_enabled(two, egui::Button::new(t("👖 Hose von B"))).clicked() {
-                self.preset_parts(&[Part::RightLeg, Part::LeftLeg], t("Hose von B"));
+            if ui.add_enabled(two, egui::Button::new(t1("👖 Hose von {0}", dl))).clicked() {
+                self.preset_parts(&[Part::RightLeg, Part::LeftLeg], &t1("Hose von {0}", dl));
             }
-            if ui.add_enabled(two, egui::Button::new(t("🎩 Frisur/Hut von B"))).clicked() {
-                self.preset_parts(&[], t("Frisur/Hut von B"));
-                self.choice[Part::Head.idx()][1] = Src::Slot(1);
+            if ui.add_enabled(two, egui::Button::new(t1("🎩 Frisur/Hut von {0}", dl))).clicked() {
+                self.preset_parts(&[], &t1("Frisur/Hut von {0}", dl));
+                if let Some(d) = donor {
+                    self.choice[Part::Head.idx()][1] = Src::Slot(d as u8);
+                    self.sync_layers = false;
+                }
             }
             if ui.add_enabled(n >= 1, egui::Button::new(t("🎲 Zufallsmix"))).clicked() {
                 self.preset_random();
@@ -1391,4 +1434,52 @@ fn skin_fill(pal: &TonePalette, x: usize, y: usize, shadow: f32) -> Rgba {
     let mut lab = [pal.main_lab[0] * 0.6 + base[0] * 0.4, pal.main_lab[1], pal.main_lab[2]];
     lab[0] += shadow;
     color::from_lab(lab, 255)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Skin, dessen Körper und Beine eine feste Farbe haben
+    fn colored(c: Rgba) -> Skin {
+        let mut s = skin::starter_skin();
+        for p in [Part::Body, Part::RightArm, Part::LeftArm, Part::RightLeg, Part::LeftLeg] {
+            let b = skin::box_of(Model::Classic, p, Layer::Base);
+            for face in Face::ALL {
+                let (fx, fy, fw, fh) = b.face_rect(face);
+                for j in 0..fh {
+                    for i in 0..fw {
+                        s.set(fx + i, fy + j, c);
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    fn color_of(m: &Mixer, part: Part) -> Rgba {
+        let (fx, fy, _, _) = skin::box_of(Model::Classic, part, Layer::Base).face_rect(Face::Front);
+        m.result.get(fx + 1, fy + 1)
+    }
+
+    #[test]
+    fn oberteil_und_hose_vom_anderen_skin() {
+        let other = [10, 200, 10, 255];
+        let mine = [200, 10, 10, 255];
+        let mut m = Mixer::new();
+        // der andere Skin steht auf A, der eigene auf B
+        m.set_slot(None, colored(other), Model::Classic, "Anderer".into());
+        m.set_project_slot(None, colored(mine), Model::Classic);
+        m.tone_transfer = false;
+
+        m.preset_parts(&[Part::Body, Part::RightArm, Part::LeftArm], "Oberteil");
+        m.recompute();
+        assert_eq!(color_of(&m, Part::Body), other, "Oberteil kommt vom anderen Skin");
+        assert_eq!(color_of(&m, Part::RightLeg), mine, "Hose bleibt die eigene");
+
+        m.preset_parts(&[Part::RightLeg, Part::LeftLeg], "Hose");
+        m.recompute();
+        assert_eq!(color_of(&m, Part::Body), mine, "Oberteil bleibt das eigene");
+        assert_eq!(color_of(&m, Part::LeftLeg), other, "Hose kommt vom anderen Skin");
+    }
 }

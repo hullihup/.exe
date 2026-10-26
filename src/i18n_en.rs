@@ -477,4 +477,13 @@ pub static EN: &[(&str, &str)] = &[
     ("Öffnet das NameMC-Profil im Browser. Jeder Skin, den du dort herunterlädst, landet automatisch hier.", "Opens the NameMC profile in your browser. Every skin you download there shows up here automatically."),
     ("Auf NameMC einfach bei jedem Skin auf „Download“ klicken – Skin Studio übernimmt neue Downloads automatisch und speichert sie bei {0}.", "On NameMC just click “Download” on each skin – Skin Studio picks up new downloads automatically and saves them for {0}."),
     ("✔ {0} Skins aus dem Download-Ordner übernommen", "✔ {0} skins taken from the downloads folder"),
+    ("Teile nehmen von:", "Take parts from:"),
+    ("💑 Mein Kopf + Outfit von {0}", "💑 My head + outfit of {0}"),
+    ("💑 Kopf von {0} + mein Outfit", "💑 Head of {0} + my outfit"),
+    ("👕 Oberteil von {0}", "👕 Top of {0}"),
+    ("Oberteil von {0}", "Top of {0}"),
+    ("👖 Hose von {0}", "👖 Pants of {0}"),
+    ("Hose von {0}", "Pants of {0}"),
+    ("🎩 Frisur/Hut von {0}", "🎩 Hair/hat of {0}"),
+    ("Frisur/Hut von {0}", "Hair/hat of {0}"),
 ];
