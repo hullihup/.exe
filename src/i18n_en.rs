@@ -471,4 +471,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Zuletzt geprüft vor {0} s", "Last checked {0} s ago"),
     ("Noch nicht geprüft", "Not checked yet"),
     ("prüft alle 5 Sekunden", "checks every 5 seconds"),
+    ("🌐 Alle früheren Skins auf NameMC", "🌐 All earlier skins on NameMC"),
+    ("Öffnet das NameMC-Profil im Browser. Dort einen Skin herunterladen und die PNG hierher ziehen – er wird dann bei diesem Spieler gespeichert.", "Opens the NameMC profile in your browser. Download a skin there and drag the PNG here – it is then saved for this player."),
+    ("Skin von NameMC heruntergeladen? Einfach die PNG hierher ziehen – sie wird bei {0} gespeichert.", "Downloaded a skin from NameMC? Just drag the PNG here – it will be saved for {0}."),
 ];

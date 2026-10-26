@@ -76,6 +76,36 @@ struct NewDialog {
     launcher: Vec<mcskin::Known>,
 }
 
+impl NewDialog {
+    /// Skin aus einer Datei übernehmen; ist ein Spieler gefunden, kommt er auch in dessen Skin-Liste.
+    fn take_skin(&mut self, label: String, skin: Skin, model: Model) {
+        if let Some(name) = self.found_for.clone() {
+            mcskin::add_to_history(&name, &skin, model);
+            if let Some((_, st)) = &self.lookup {
+                if let Ok(mut g) = st.lock() {
+                    if let mcskin::Lookup::Found { skin: cur, history, .. } = &mut *g {
+                        *history = mcskin::history(&name).into_iter().filter(|k| k.skin != *cur).collect();
+                    }
+                }
+            }
+        }
+        self.file = Some((label, skin, model));
+    }
+}
+
+/// Öffnet eine Internetseite im Standard-Browser.
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).creation_flags(0x0800_0000).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
 /// Kleines Gesicht eines Skins (Kopf vorne mit 2. Ebene), wie bei NameMC
 fn face_texture(ctx: &egui::Context, faces: &mut Vec<(Skin, egui::TextureHandle)>, skin: &Skin) -> egui::TextureId {
     if let Some((_, t)) = faces.iter().find(|(s, _)| s == skin) {
@@ -553,6 +583,11 @@ impl App {
             match f.bytes().and_then(|b| Skin::from_png(&b)) {
                 Ok(s) => {
                     let m = detect_model(&s);
+                    // Dialog „Neues Projekt“ offen: Skin dort übernehmen
+                    if let Some(d) = self.new_dialog.as_mut() {
+                        d.take_skin(Self::file_name(&path), s, m);
+                        continue;
+                    }
                     match self.screen {
                         Screen::Start => {
                             if let Err(e) = self.create_project(Self::file_stem(&path), s, m) {
@@ -847,10 +882,18 @@ impl App {
                                 // kleine Knöpfe zum Umbenennen / Löschen
                                 let mut consumed = false;
                                 if hovered || ui.rect_contains_pointer(rect) {
+                                    // Knöpfe nur zeichnen, ohne Platz im Layout zu belegen (sonst verrutschen die Karten)
+                                    let small_btn = |ui: &mut egui::Ui, r: Rect, icon: &str, salt: &str| {
+                                        let resp = ui.interact(r, ui.scope_id().with((salt, id.as_str())), Sense::click());
+                                        let fill = if resp.hovered() { Color32::from_rgb(70, 76, 90) } else { Color32::from_rgb(52, 56, 66) };
+                                        ui.painter().rect_filled(r, 4.0, fill);
+                                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(13.0), Color32::WHITE);
+                                        resp
+                                    };
                                     let b1 = Rect::from_min_size(rect.right_top() + egui::vec2(-62.0, 6.0), egui::vec2(26.0, 24.0));
                                     let b2 = Rect::from_min_size(rect.right_top() + egui::vec2(-32.0, 6.0), egui::vec2(26.0, 24.0));
-                                    let r1 = ui.put(b1, egui::Button::new("✏").small()).on_hover_text(t("Umbenennen"));
-                                    let r2 = ui.put(b2, egui::Button::new("🗑").small()).on_hover_text(t("Löschen"));
+                                    let r1 = small_btn(ui, b1, "✏", "ren").on_hover_text(t("Umbenennen"));
+                                    let r2 = small_btn(ui, b2, "🗑", "del").on_hover_text(t("Löschen"));
                                     if r1.clicked() {
                                         self.rename = Some((id.clone(), name.clone()));
                                         consumed = true;
@@ -1122,9 +1165,7 @@ impl App {
             Screen::Mixer => {
                 ui.label(t("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. „Ins Projekt übernehmen“ speichert den Mix als Projekt-Skin."));
             }
-            Screen::Start => {
-                ui.label(RichText::new(t("Deine Projekte werden im Programm gespeichert – du musst keine Dateien verwalten.")).weak());
-            }
+            Screen::Start => {}
         });
     }
 
@@ -1186,7 +1227,7 @@ impl App {
                     if ui.button(t("📂 PNG auswählen …")).clicked() {
                         if let Some(p) = Self::pick_png() {
                             match Self::read_skin(&p) {
-                                Ok((s, m)) => d.file = Some((Self::file_name(&p), s, m)),
+                                Ok((s, m)) => d.take_skin(Self::file_name(&p), s, m),
                                 Err(e) => pick_err = Some(e),
                             }
                         }
@@ -1201,8 +1242,8 @@ impl App {
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     let searched = d.lookup.as_ref().is_some_and(|(n, _)| n.eq_ignore_ascii_case(&name));
                     if !name.is_empty() && !searched {
-                        // 3 Sekunden nach dem letzten Tippen (oder sofort mit Enter) suchen
-                        let wait = 3.0 - (now - d.user_edit);
+                        // 2 Sekunden nach dem letzten Tippen (oder sofort mit Enter) suchen
+                        let wait = 2.0 - (now - d.user_edit);
                         if enter || wait <= 0.0 {
                             d.lookup = Some((name.clone(), mcskin::fetch_async(name, ui.ctx())));
                         } else {
@@ -1241,9 +1282,16 @@ impl App {
                             let it = &items[k];
                             d.file = Some((if k == 0 { name.clone() } else { format!("{name} ({})", it.label) }, it.skin.clone(), it.model));
                         }
-                        if items.len() == 1 {
-                            ui.label(RichText::new(t("Frühere Skins erscheinen hier, sobald Skin Studio sie einmal gesehen hat.")).small().weak());
-                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button(t("🌐 Alle früheren Skins auf NameMC"))
+                                .on_hover_text(t("Öffnet das NameMC-Profil im Browser. Dort einen Skin herunterladen und die PNG hierher ziehen – er wird dann bei diesem Spieler gespeichert."))
+                                .clicked()
+                            {
+                                open_url(&format!("https://namemc.com/profile/{name}"));
+                            }
+                        });
+                        ui.label(RichText::new(t1("Skin von NameMC heruntergeladen? Einfach die PNG hierher ziehen – sie wird bei {0} gespeichert.", &name)).small().weak());
                     }
                     None => {}
                 }
@@ -1739,9 +1787,11 @@ impl eframe::App for App {
                 .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 0 }))
                 .show(ui, |ui| self.tab_bar(ui));
         }
-        egui::Panel::bottom("status")
-            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(10, 4)))
-            .show(ui, |ui| self.status_bar(ui));
+        if self.screen != Screen::Start {
+            egui::Panel::bottom("status")
+                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(10, 4)))
+                .show(ui, |ui| self.status_bar(ui));
+        }
 
         match self.screen {
             Screen::Start => {

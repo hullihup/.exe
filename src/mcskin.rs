@@ -41,6 +41,11 @@ pub fn history(name: &str) -> Vec<Known> {
         .collect()
 }
 
+/// Skin von Hand (z. B. von NameMC heruntergeladen) zur Liste eines Spielers hinzufügen.
+pub fn add_to_history(name: &str, skin: &Skin, model: Model) {
+    remember(name, skin, model);
+}
+
 /// Neuen Skin im Verlauf ablegen (falls noch nicht vorhanden). Gibt den Verlauf ohne den aktuellen Skin zurück.
 fn remember(name: &str, skin: &Skin, model: Model) -> Vec<Known> {
     let mut known = history(name);
