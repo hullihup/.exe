@@ -1203,9 +1203,7 @@ impl App {
                     ui.label(RichText::new(t("Alt+Klick: Pipette · Strg+Z: zurück · F1: alle Tastenkürzel")).weak());
                 });
             }
-            Screen::Mixer => {
-                ui.label(t("Skin-Mixer – kombiniere Skins und Outfit-Vorlagen. Änderungen landen sofort im Editor."));
-            }
+            Screen::Mixer => {}
             Screen::Start => {}
         });
     }
@@ -1841,7 +1839,7 @@ impl eframe::App for App {
                 .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 0 }))
                 .show(ui, |ui| self.tab_bar(ui));
         }
-        if self.screen != Screen::Start {
+        if self.screen == Screen::Editor {
             egui::Panel::bottom("status")
                 .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(10, 4)))
                 .show(ui, |ui| self.status_bar(ui));

@@ -834,6 +834,79 @@ impl Mixer {
         self.outfit_thumbs = Some((head_skin, texs));
     }
 
+    /// Kleiner Pfeil über einer Spalte: klappt mit Animation die Liste aller Skins auf.
+    /// Gibt den gewählten Skin zurück (gilt dann für die ganze Spalte außer dem Kopf).
+    fn column_menu(&mut self, ui: &mut egui::Ui, layer: usize) -> Option<Src> {
+        let id = ui.scope_id().with(("mix_col_menu", layer));
+        let open = egui::Popup::is_id_open(ui.ctx(), id);
+        let anim = ui.ctx().animate_bool_with_time(id.with("anim"), open, 0.18);
+        // kleiner Pfeil, der sich beim Aufklappen umdreht
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), Sense::click());
+        let p = ui.painter();
+        let hovered = resp.hovered() || open;
+        p.rect_filled(rect, 4.0, if hovered { Color32::from_rgb(70, 76, 90) } else { Color32::from_rgb(52, 56, 66) });
+        let c = rect.center();
+        let dir = 1.0 - 2.0 * anim; // 1 = nach unten, -1 = nach oben
+        let col = if hovered { crate::ORANGE } else { Color32::from_gray(200) };
+        p.add(egui::Shape::convex_polygon(
+            vec![c + egui::vec2(-4.0, -2.5 * dir), c + egui::vec2(4.0, -2.5 * dir), c + egui::vec2(0.0, 3.0 * dir)],
+            col,
+            egui::Stroke::NONE,
+        ));
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let ctx = ui.ctx().clone();
+        let mut options: Vec<Src> = (0..self.slots.len()).map(|i| Src::Slot(i as u8)).collect();
+        options.push(Src::Empty);
+        let mut picked = None;
+        egui::Popup::from_toggle_button_response(&resp)
+            .id(id)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                let row_h = 28.0;
+                let full = options.len() as f32 * (row_h + 2.0);
+                // Ausklapp-Animation: sichtbarer Bereich wächst von 0 auf die volle Liste
+                let (area, _) = ui.allocate_exact_size(egui::vec2(190.0, (full * anim).max(1.0)), Sense::hover());
+                let p = ui.painter().with_clip_rect(area);
+                for (k, &o) in options.iter().enumerate() {
+                    let rect = egui::Rect::from_min_size(area.min + egui::vec2(0.0, k as f32 * (row_h + 2.0)), egui::vec2(190.0, row_h));
+                    if rect.min.y >= area.max.y {
+                        break;
+                    }
+                    let r = ui.interact(rect.intersect(area), id.with(("row", k)), Sense::click());
+                    if r.hovered() {
+                        p.rect_filled(rect, 4.0, Color32::from_white_alpha(18));
+                    }
+                    let badge = rect.left_center() + egui::vec2(14.0, 0.0);
+                    match o {
+                        Src::Slot(i) => {
+                            let i = i as usize;
+                            p.circle_filled(badge, 10.0, letter_color(i));
+                            p.text(badge, egui::Align2::CENTER_CENTER, letter(i), egui::FontId::proportional(12.0), Color32::BLACK);
+                            // Gesicht des Skins
+                            let tex = self.slots[i].texture(&ctx).id();
+                            let face = egui::Rect::from_center_size(rect.left_center() + egui::vec2(42.0, 0.0), egui::vec2(20.0, 20.0));
+                            let uv = egui::Rect::from_min_max(egui::pos2(8.0 / 64.0, 8.0 / 64.0), egui::pos2(16.0 / 64.0, 16.0 / 64.0));
+                            p.image(tex, face, uv, Color32::WHITE);
+                            let name: String = self.slots[i].name.chars().take(16).collect();
+                            p.text(rect.left_center() + egui::vec2(60.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(13.0), ui.visuals().text_color());
+                        }
+                        _ => {
+                            p.circle_stroke(badge, 9.0, egui::Stroke::new(1.0, Color32::from_gray(140)));
+                            p.text(badge, egui::Align2::CENTER_CENTER, "–", egui::FontId::proportional(12.0), Color32::from_gray(160));
+                            p.text(rect.left_center() + egui::vec2(34.0, 0.0), egui::Align2::LEFT_CENTER, t("leer"), egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
+                        }
+                    }
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        picked = Some(o);
+                    }
+                }
+            });
+        if picked.is_some() {
+            egui::Popup::close_id(&ctx, id);
+        }
+        picked
+    }
+
     /// Auswahl der Quelle (A, B, C …) für ein Körperteil. Gibt `true` zurück, wenn geändert.
     fn src_picker(ui: &mut egui::Ui, value: &mut Src, names: &[String], hands: bool, base: bool, id: (usize, usize)) -> bool {
         let n = names.len();
@@ -913,12 +986,19 @@ impl Mixer {
         if ui.checkbox(&mut self.sync_layers, t("1. und 2. Ebene gleich")).on_hover_text(t("Wählst du bei der 1. Ebene einen Skin, bekommt die 2. Ebene automatisch denselben.")).changed() {
             self.changed = true;
         }
-        let mut fill_from: Option<usize> = None;
-        egui::Grid::new("mix_parts").num_columns(4).spacing([6.0, 4.0]).striped(true).show(ui, |ui| {
+        // Pfeile oben: eine ganze Spalte (außer Kopf) auf einen Skin setzen
+        let mut col_pick: Option<(usize, Src)> = None;
+        egui::Grid::new("mix_parts").num_columns(3).spacing([6.0, 4.0]).striped(true).show(ui, |ui| {
             ui.label("");
-            ui.label(RichText::new(t("1. Ebene")).small());
-            ui.label(RichText::new(t("2. Ebene")).small());
-            ui.label("");
+            for layer in 0..2 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.label(RichText::new(if layer == 0 { t("1. Ebene") } else { t("2. Ebene") }).small());
+                    if let Some(src) = self.column_menu(ui, layer) {
+                        col_pick = Some((layer, src));
+                    }
+                });
+            }
             ui.end_row();
             for p in Part::ALL {
                 ui.label(p.name());
@@ -938,17 +1018,6 @@ impl Mixer {
                 } else if Self::src_picker(ui, &mut self.choice[row][1], &names, false, false, (row, 1)) {
                     self.changed = true;
                 }
-                if p != Part::Head {
-                    if ui
-                        .add(egui::Button::new(RichText::new("⬇").size(11.0)).small())
-                        .on_hover_text(t("Diese Auswahl für alle Körperteile übernehmen (außer Kopf)"))
-                        .clicked()
-                    {
-                        fill_from = Some(row);
-                    }
-                } else {
-                    ui.label("");
-                }
                 ui.end_row();
             }
             ui.label(RichText::new(t("✋ Hände")).strong()).on_hover_text(t("Unterer Teil beider Arme"));
@@ -966,15 +1035,26 @@ impl Mixer {
             } else if Self::src_picker(ui, &mut self.choice[HANDS][1], &names, true, false, (HANDS, 1)) {
                 self.changed = true;
             }
-            ui.label("");
             ui.end_row();
         });
-        if let Some(row) = fill_from {
-            let v = self.choice[row];
+        if let Some((layer, src)) = col_pick {
             for p in Part::ALL {
-                if p != Part::Head {
-                    self.choice[p.idx()] = v;
+                if p == Part::Head {
+                    continue;
                 }
+                let row = &mut self.choice[p.idx()];
+                if layer == 0 {
+                    row[0] = src;
+                    if self.sync_layers {
+                        row[1] = src.for_overlay();
+                    }
+                } else {
+                    row[1] = src;
+                }
+            }
+            // eine eigene Wahl für die 2. Ebene hebt die Kopplung auf
+            if layer == 1 {
+                self.sync_layers = false;
             }
             self.changed = true;
         }

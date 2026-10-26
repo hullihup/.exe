@@ -48,7 +48,7 @@ Ein schlanker, schneller Skin-Editor für Windows mit 3D-Vorschau und **Skin-Mix
 - Dein Projekt-Skin ist automatisch als Skin A dabei
 - **Bis zu 26 Skins (A–Z)** laden (mehrere Dateien auf einmal oder per Drag & Drop) und für jedes Körperteil und jede Ebene wählen, von welchem Skin es kommt
 - **1. und 2. Ebene gleich** (Standard): wählst du z. B. beim Kopf B, bekommt auch die 2. Ebene B
-- Der kleine **⬇-Pfeil** übernimmt die Auswahl einer Zeile für alle Körperteile außer dem Kopf
+- Die kleinen **Pfeile neben „1. Ebene“ und „2. Ebene“** klappen eine Liste aller Skins (A, B, C …) auf – ein Klick setzt die ganze Spalte auf diesen Skin, nur der Kopf bleibt
 - **Hände** separat wählen: so wie beim Arm, von einem beliebigen Skin oder **in der Hautfarbe des Kopfes** (Handlänge einstellbar)
 - Vorlagen: **Kopf A + Outfit B** (Partnerlook), Oberteil tauschen, Hose tauschen, Frisur oder Hut tauschen, Zufallsmix
 - **Smarte Hautton-Erkennung** (wahrnehmungsnaher Lab-Farbraum): erkennt die Hautfarbe samt aller Schattierungen am Gesicht und färbt sichtbare Haut des Outfits (Hände, Arme, Beine) passend um, mit allen Schattierungen. Die 2. Ebene (Kleidung) wird dabei nie umgefärbt. Hat ein Skin kein erkennbares Gesicht (z. B. eine Maske), wird die Haut an Händen und Hals gesucht. Mit „Erkannte Haut anzeigen“ siehst du, was umgefärbt wird, und mit „Eigene Hautfarbe“ legst du sie selbst fest.
